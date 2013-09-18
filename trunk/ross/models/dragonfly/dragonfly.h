@@ -4,27 +4,34 @@
 #include <ross.h>
 
 // dragonfly basic configuration parameters
-#define GLOBAL_CHANNELS 60
-#define NUM_ROUTER 120
-#define NUM_TERMINALS 60
+#define GLOBAL_CHANNELS 4
+#define NUM_ROUTER 8
+#define NUM_TERMINALS 4
 
-#define PACKET_SIZE 1.0
+#define PACKET_SIZE 256.0
 
 // delay parameters
 #define TERMINAL_DELAY 1.0
-#define LOCAL_DELAY 10.0
-#define GLOBAL_DELAY 100.0
+#define LOCAL_DELAY 1.0
+#define GLOBAL_DELAY 10.0
+
+//2 GB/secs
+#define GLOBAL_BANDWIDTH 6.4424 
+#define LOCAL_BANDWIDTH 1.6111
+#define NODE_BANDWIDTH 1.074
 #define RESCHEDULE_DELAY 1
 
 // time to process a packet at destination terminal
-#define MEAN_PROCESS 0
+#define MEAN_PROCESS 4600
 #define ROUTING MINIMAL
-#define NUM_VC 2
+#define NUM_VC 1
 
 #define N_COLLECT_POINTS 20
 
 // virtual channel information
-#define VC_BUF_SIZE 256
+#define LOCAL_VC_SIZE 16
+#define GLOBAL_VC_SIZE 84
+#define TERMINAL_VC_SIZE 32
 
 // radix of each router
 #define RADIX (NUM_VC * NUM_ROUTER)+ (NUM_VC*GLOBAL_CHANNELS) + (NUM_VC * NUM_TERMINALS)
@@ -32,11 +39,11 @@
 
 // debugging parameters
 #define DEBUG 1
-#define TRACK 77682
+#define TRACK 106513
 #define PRINT_ROUTER_TABLE 1
 
 // arrival rate
-static double MEAN_INTERVAL;
+static double MEAN_INTERVAL=1.43;
 
 static int routing;
 static int traffic;
@@ -57,10 +64,9 @@ struct terminal_state
 
    // Each terminal will have an input and output channel with the router
    unsigned int vc_occupancy[NUM_VC];
-
    unsigned int output_vc_state[NUM_VC];
-
    int terminal_available_time;
+   
 };
 
 // Terminal generate, sends and arrival T_SEND, T_ARRIVAL, T_GENERATE
@@ -77,7 +83,6 @@ enum event_t
   R_SEND,
   R_ARRIVE,
 
-  T_PROCESS,
   BUFFER
 };
 
