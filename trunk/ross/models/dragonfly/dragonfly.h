@@ -87,6 +87,7 @@ struct terminal_state
 enum event_t
 {
   RESCHEDULE,
+  T_GENERATE,
   T_ARRIVE,
   T_SEND,
 
@@ -95,7 +96,7 @@ enum event_t
 
   BUFFER,
   WAIT,
-  T_GENERATE
+  FINISH
 };
 
 enum vc_status
@@ -174,6 +175,7 @@ struct router_state
 
    tw_stime next_available_time;
    tw_stime next_credit_available_time[RADIX];
+//   tw_stime next_credit_available_time[RADIX];
 
    unsigned int credit_occupancy[RADIX];   
    unsigned int vc_occupancy[RADIX];

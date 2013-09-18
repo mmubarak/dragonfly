@@ -143,6 +143,13 @@ void router_credit_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
     else
       printf("\n Invalid message type");
 
+   int output_port = output_chan/NUM_VC;
+
+   s->next_credit_available_time[output_port] = max(tw_now(lp), s->next_credit_available_time[output_port]);
+   s->next_credit_available_time[output_port] += 2.0;
+
+   buf_e = tw_event_new(dest, s->next_credit_available_time[output_port] - tw_now(lp) , lp);
+
   buf_e = tw_event_new(dest, 0.1, lp);
   buf_msg = tw_event_data(buf_e);
   buf_msg->vc_index = msg->saved_vc;
@@ -374,13 +381,9 @@ if( msg->packet_ID == TRACK )
 
   // Packet arrives and accumulate # queued
   // Find a queue with an empty buffer slot
-  N_finished++;
-  
-  int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
-  N_finished_storage[index]++;
 
   int body_delay;
-
+  
   switch( msg->route )
   {
   case MINIMAL:
@@ -399,18 +402,10 @@ if( msg->packet_ID == TRACK )
 	printf("\n Invalid message route!");
  }
 
-  total_time += (tw_now(lp) + MEAN_PROCESS + body_delay - msg->travel_start_time);
-
-  if (max_latency < (tw_now(lp) + MEAN_PROCESS - msg->travel_start_time) )
-      {
-         max_latency=tw_now(lp) + MEAN_PROCESS - msg->travel_start_time;
-         max_packet = msg->packet_ID;
-      }
-
   total_hops += msg->my_N_hop;
 
-  tw_event * buf_e;
-  terminal_message * buf_msg;
+  tw_event * buf_e, * e;
+  terminal_message * buf_msg, * m;
    
   buf_e = tw_event_new(msg->intm_lp_id, 0.1, lp);
   buf_msg = tw_event_data(buf_e);
@@ -420,8 +415,28 @@ if( msg->packet_ID == TRACK )
 
   tw_event_send(buf_e);
 
+  e = tw_event_new(lp->gid, MEAN_PROCESS + body_delay, lp);
+  m = tw_event_data( e );
+  m->travel_start_time = msg->travel_start_time;
+  m->type = FINISH;
+  m->packet_ID = msg->packet_ID;
+  tw_event_send(e);
 }
 
+void packet_finish(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+{
+  N_finished++;
+
+  int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
+  N_finished_storage[index]++;
+  total_time += (tw_now(lp) - msg->travel_start_time);
+
+  if (max_latency < (tw_now(lp) - msg->travel_start_time) )
+   {
+	max_latency=tw_now(lp) - msg->travel_start_time;
+	max_packet = msg->packet_ID;
+   }
+}
 /////////////////// WAiting packets linked list /////////////////////////////
 void
 update_terminal_waiting_list( terminal_state * s,
@@ -572,6 +587,10 @@ void terminal_event(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_l
 
     case WAIT:
      update_terminal_waiting_list( s, msg, lp );
+    break;
+
+    case FINISH:
+	packet_finish(s, bf, msg, lp);
     break;
 
     default:
@@ -968,15 +987,15 @@ void router_packet_receive(router_state * s, tw_bf * bf, terminal_message * msg,
 
   msg->saved_available_time = s->next_input_available_time[input_port];
 
-  //s->next_input_available_time[input_port] = max(s->next_input_available_time[input_port], tw_now(lp));
-  //s->next_input_available_time[input_port] += 0.5;
+  s->next_input_available_time[input_port] = max(s->next_input_available_time[input_port], tw_now(lp));
+  s->next_input_available_time[input_port] += 2.0;
 
-//  e = tw_event_new(lp->gid, s->next_input_available_time[input_port] - tw_now(lp), lp);
   head_delay = ( 1 / LOCAL_BANDWIDTH ) * HEAD_SIZE;
-  s->next_available_time = max(tw_now(lp), s->next_available_time);
-  s->next_available_time += 0.5;
+  e = tw_event_new(lp->gid, s->next_input_available_time[input_port] + head_delay - tw_now(lp), lp);
+//   s->next_available_time = max(tw_now(lp), s->next_available_time);
+//   s->next_available_time += 2.0;
 
-  e = tw_event_new(lp->gid, s->next_available_time + head_delay - tw_now(lp), lp);
+//   e = tw_event_new(lp->gid, s->next_available_time + head_delay - tw_now(lp), lp);
  
 // s->next_input_available_time[input_port] += 1.0;
   //e = tw_event_new(lp->gid, 0.5, lp);
@@ -1015,11 +1034,12 @@ void router_setup(router_state * r, tw_lp * lp)
    int i, j;
    int offset=(lp->gid%NUM_ROUTER) * (GLOBAL_CHANNELS/2) +1;
   
+//   r->next_credit_available_time = 0;
    for(i=0; i < RADIX; i++)
     {
 	r->next_input_available_time[i]=0;
 	r->next_output_available_time[i]=0;
-	r->next_credit_available_time[i]=0;
+        r->next_credit_available_time[i]=0;
 
        // Set credit & router occupancy
        r->vc_occupancy[i]=0;
@@ -1270,7 +1290,7 @@ void router_rc_event_handler(router_state * s, tw_bf * bf, terminal_message * ms
 			   s->output_vc_state[output_chan] = VC_IDLE;
 			   s->next_output_available_time[output_port] = msg->saved_available_time;
 			   s->vc_occupancy[output_chan]--;
-			   s->next_credit_available_time[output_port] = msg->saved_credit_time;
+			   //s->next_credit_available_time[output_port] = msg->saved_credit_time;
 			 }
 			if(bf->c1 == 1)
 				minimal_count--;
