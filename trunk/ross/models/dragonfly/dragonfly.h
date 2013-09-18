@@ -2,77 +2,145 @@
 #define INC_dragonfly_h
 
 #include <ross.h>
+
+// dragonfly basic configuration parameters
 #define GLOBAL_CHANNELS 16
 #define NUM_ROUTER 32
 #define NUM_TERMINALS 16
-#define PACKET_SIZE 256.0
-#define LINK_DELAY 100.0
-#define ROUTER_DELAY 100.0
-#define MEAN_PROCESS 200.0
+
+#define PACKET_SIZE 1.0
+
+// delay parameters
+#define TERMINAL_DELAY 1.0
+#define ROUTING_DELAY 5
+#define LOCAL_DELAY 10.0
+#define GLOBAL_DELAY 100.0
+#define RESCHEDULE_DELAY 1
+
+// time to process a packet
+#define MEAN_PROCESS 0.0
+
 #define N_COLLECT_POINTS 20
+
+// virtual channel information
+#define NUM_VC 2
+#define VC_BUF_SIZE 256
+
+// radix of each router
+#define RADIX (NUM_VC * NUM_ROUTER)+ (NUM_VC*GLOBAL_CHANNELS) + (NUM_VC * NUM_TERMINALS)
+
+
+// debugging parameters
 #define DEBUG 1
-#define TRACK 26419
+#define TRACK 320232
 #define PRINT_ROUTER_TABLE 1
 
-static double ARRIVAL_RATE = 0.0000001;
+// arrival rate
 static double MEAN_INTERVAL;
 
-typedef enum terminal_event_t terminal_event_t;
+typedef enum event_t event_t;
 typedef struct terminal_state terminal_state;
 typedef struct terminal_message terminal_message;
+typedef struct buf_space_message buf_space_message;
 typedef struct router_state router_state;
-typedef enum router_event_t router_event_t;
 
 struct terminal_state
 {
    unsigned long long packet_counter;
-   int N_wait_to_be_processed;
-   unsigned int group_id;
+
+   // Dragonfly specific parameters
    unsigned int router_id;
    unsigned int terminal_id;
-   tw_stime next_available_time;
-   tw_stime saved_available_time;  
+
+   // Each terminal will have an input and output channel with the router
+   unsigned int vc_occupancy[NUM_VC];
+
+   unsigned int output_vc_state[NUM_VC];
+
+   int terminal_available_time;
 };
 
-enum terminal_event_t
+// Terminal generate, sends and arrival T_SEND, T_ARRIVAL, T_GENERATE
+// Router-Router Intra-group sends and receives RR_LSEND, RR_LARRIVE
+// Router-Router Inter-group sends and receives RR_GSEND, RR_GARRIVE
+
+enum event_t
 {
-  GENERATE,
-  ARRIVAL,
-  SEND,
-  PROCESS
+  T_GENERATE,
+  T_ARRIVE,
+  T_SEND,
+
+  R_SEND,
+  R_ARRIVE,
+
+  T_PROCESS,
+  BUFFER
 };
 
+enum vc_status
+{
+   VC_IDLE,
+   VC_ACTIVE,
+   VC_ALLOC,
+   VC_CREDIT
+};
+
+enum last_hop
+{
+   GLOBAL,
+   LOCAL,
+   TERMINAL
+};
 struct terminal_message
 {
-  tw_stime transmission_time;
   tw_stime travel_start_time;
-  tw_stime saved_router_available_time;
-  tw_stime saved_available_time;
+  
   unsigned long long packet_ID;
-  terminal_event_t  type;
+  event_t  type;
+  
   unsigned int dest_terminal_id;
-  unsigned int saved_src_terminal_id;
   unsigned int src_terminal_id;
-  int my_N_queue;
+  
   int my_N_hop;
-  int queueing_times;
-  int next_stop;
+
+  // Intermediate LP ID from which this message is coming
+  unsigned int intm_lp_id;
+  int saved_vc;
+
+  int last_hop;
+
+  // For buffer message
+   int vc_index;
+   unsigned int credit_delay;
+
+   int input_chan;
 };
 
 struct router_state
 {
    unsigned int router_id;
    unsigned int group_id;
-   int global_channel[GLOBAL_CHANNELS];
-   unsigned long long num_routed_packets;
-   int N_wait_to_be_processed;
-   tw_stime next_router_available_time;
-   tw_stime saved_router_available_time;
+  
+   int global_channel[GLOBAL_CHANNELS]; 
+
+   // 0--NUM_ROUTER-1 local router indices (router-router intragroup channels)
+   // NUM_ROUTER -- NUM_ROUTER+GLOBAL_CHANNELS-1 global channel indices (router-router inter-group channels)
+   // NUM_ROUTER+GLOBAL_CHANNELS -- RADIX-1 terminal indices (router-terminal channels)
+   tw_stime next_output_available_time[RADIX];
+   tw_stime next_input_available_time[RADIX];
+
+   tw_stime next_credit_available_time[RADIX];
+
+   unsigned int credit_occupancy[RADIX];   
+   unsigned int vc_occupancy[RADIX];
+
+   unsigned int input_vc_state[RADIX];
+   unsigned int output_vc_state[RADIX];
 };
 
 static int       nlp_terminal_per_pe;
 static int       nlp_router_per_pe;
-static int opt_mem = 30000;
+static int opt_mem = 1000000;
 
 tw_stime         average_travel_time = 0;
 tw_stime         total_time = 0;
@@ -83,9 +151,6 @@ unsigned long num_groups = NUM_ROUTER*GLOBAL_CHANNELS+1;
 int total_routers, total_terminals;
 
 static unsigned long long       total_hops = 0;
-static unsigned long long       total_queue_length = 0;
-static unsigned long long       queueing_times_sum = 0;
-
 static unsigned long long       N_finished = 0;
 static unsigned long long       N_finished_storage[N_COLLECT_POINTS];
 static unsigned long long       N_generated_storage[N_COLLECT_POINTS];
