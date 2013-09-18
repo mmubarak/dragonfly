@@ -1049,7 +1049,7 @@ void router_setup(router_state * r, tw_lp * lp)
 //   r->next_credit_available_time = 0;
    for(i=0; i < RADIX; i++)
     {
-	r->next_input_available_time[i]=0;
+	//r->next_input_available_time[i]=0;
 	r->next_output_available_time[i]=0;
         r->next_credit_available_time[i]=0;
 
@@ -1057,7 +1057,7 @@ void router_setup(router_state * r, tw_lp * lp)
        r->vc_occupancy[i]=0;
 
        // Set virtual channel state to idle
-       r->input_vc_state[i] = VC_IDLE;
+       //r->input_vc_state[i] = VC_IDLE;
        r->output_vc_state[i]= VC_IDLE;
     }
 

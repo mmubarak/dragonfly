@@ -48,11 +48,11 @@
 
 #define NUM_ROWS NUM_ROUTER*NUM_TERMINALS
 #define NUM_COLS (NUM_ROUTER*NUM_TERMINALS)+1
-#define TERMINAL_WAITING_PACK_COUNT 1 << 20
-#define ROUTER_WAITING_PACK_COUNT 1 << 22
+#define TERMINAL_WAITING_PACK_COUNT 1 << 16
+#define ROUTER_WAITING_PACK_COUNT 1 << 18
 
 // arrival rate
-static double MEAN_INTERVAL=10.0;
+static double MEAN_INTERVAL=200.0;
 
 typedef enum event_t event_t;
 typedef struct terminal_state terminal_state;
@@ -167,7 +167,7 @@ struct terminal_message
    short wait_type;
    short wait_loc;
    short chunk_id;
-   short route;
+//   short route;
 };
 
 struct router_state
@@ -181,16 +181,16 @@ struct router_state
    // NUM_ROUTER -- NUM_ROUTER+GLOBAL_CHANNELS-1 global channel indices (router-router inter-group channels)
    // NUM_ROUTER+GLOBAL_CHANNELS -- RADIX-1 terminal indices (router-terminal channels)
    tw_stime next_output_available_time[RADIX];
-   tw_stime next_input_available_time[RADIX];
+//   tw_stime next_input_available_time[RADIX];
 
-   tw_stime next_available_time;
+//   tw_stime next_available_time;
    tw_stime next_credit_available_time[RADIX];
 //   tw_stime next_credit_available_time[RADIX];
 
-   unsigned int credit_occupancy[RADIX];   
+//   unsigned int credit_occupancy[RADIX];   
    unsigned int vc_occupancy[RADIX];
 
-   unsigned int input_vc_state[RADIX];
+//   unsigned int input_vc_state[RADIX];
    unsigned int output_vc_state[RADIX];
 
    //first element of linked list
@@ -227,7 +227,7 @@ static int mem_factor = 32;
 static int max_packets = 0;
 
 static int ROUTING= MINIMAL;
-static int traffic= TRANSPOSE;
+static int traffic= NEAREST_NEIGHBOR;
 int minimal_count, nonmin_count;
 
 int adaptive_threshold;
