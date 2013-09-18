@@ -266,8 +266,8 @@ mpi_msg_send( process_state * s,
 	   int local_offset = (lp->gid - total_routers) % NUM_TERMINALS;
 	   int group_begin = total_routers + (s->router_id * NUM_TERMINALS);
 	   dst_lp = group_begin + (NUM_TERMINALS - local_offset);
-	   if(dst_lp < group_begin || dst_lp > group_begin + offset)
-		printf("\n Incorrect destination for %d to %d ", lp->gid - total_routers, dst_lp - total_routers);
+	   //if(dst_lp < group_begin || dst_lp > group_begin + offset)
+		//printf("\n Incorrect destination for %d to %d ", lp->gid - total_routers, dst_lp - total_routers);
 //	   dst_lp = total_routers + tw_rand_integer(lp->rng, s->router_id * NUM_TERMINALS, (s->router_id + 1) * NUM_TERMINALS -1);
 	
 	   //if(dst_lp == lp->gid)
@@ -288,8 +288,8 @@ mpi_msg_send( process_state * s,
 		int local_offset = (lp->gid - total_routers) % NUM_TERMINALS;
 		int next_router_begin = total_routers + (((s->router_id + 1 ) % total_routers)* NUM_TERMINALS);
 		dst_lp = next_router_begin + (NUM_TERMINALS - local_offset);
-		if(dst_lp < next_router_begin || dst_lp > next_router_begin + NUM_TERMINALS)
-                  printf("\n Incorrect destination for %d to %d ", lp->gid - total_routers, dst_lp - total_routers);
+		//if(dst_lp < next_router_begin || dst_lp > next_router_begin + NUM_TERMINALS)
+                //  printf("\n Incorrect destination for %d to %d ", lp->gid - total_routers, dst_lp - total_routers);
 	}
 	break;
 
@@ -950,7 +950,7 @@ router_packet_send( router_state * s,
     {
        if(msg->last_hop == TERMINAL)
 	 {
-	    printf("\n %lf Router %d buffers overflowed from incoming terminals channel %d occupancy %d ", tw_now(lp), lp->gid, output_chan, s->vc_occupancy[output_chan]);
+	    printf("\n %lf Router %d buffers overflowed from incoming terminals channel %d occupancy %d ", tw_now(lp),(int)lp->gid, output_chan, s->vc_occupancy[output_chan]);
 	    bf->c2 = 0;
 	 }
       else
@@ -1064,7 +1064,7 @@ router_packet_receive( router_state * s,
 
 #if DEBUG
 if(msg->packet_ID == TRACK && msg->chunk_id == num_chunks-1)
-	printf("\n Router %d packet received %lld ", lp->gid, m->packet_ID);
+	printf("\n Router %d packet received %lld ", (int)lp->gid, m->packet_ID);
 #endif
     router_credit_send(s, bf, msg, lp);
     tw_event_send(e);  
