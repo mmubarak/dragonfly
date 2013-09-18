@@ -8,78 +8,91 @@
 
 FILE * dragonfly_event_log=NULL;
 
-tw_peid mapping(tw_lpid gid)
+int get_terminal_rem()
 {
-  int rank = (tw_peid)gid/range_start;
-  
-  return rank; 
-}
+//  if(terminal_rem > 0 && gid/(num_terminal+1) > terminal_rem)
+//    return terminal_rem;
 
-// Given a terminal ID, get its router's LP ID
-tw_lpid getRouterLPID_Terminal(tw_lpid terminal_id)
-{
-  int node_id=mapping(terminal_id);
-  
-  int local_router_id=(int)((terminal_id - ((node_id+1)* nlp_router_per_pe))/NUM_TERMINALS);
-  
-  int global_router_id=local_router_id + ((int)(local_router_id/nlp_router_per_pe) * nlp_terminal_per_pe);
+   if(terminal_rem > 0 && terminal_rem <= g_tw_mynode)
+    return terminal_rem;
 
-  if(global_router_id < 0)
-   return 0;
-  
-  return global_router_id; 
-}
-
-// Given a terminal ID, get its router local ID 0---total_routers-1
-tw_lpid getRouterIDFromTerminal(tw_lpid terminal_id)
-{
-  int node_id=mapping(terminal_id);
-  
-  int local_router_id=(int)((terminal_id - ((node_id+1)* nlp_router_per_pe))/NUM_TERMINALS);
-  
-  return local_router_id;
-}
-// Given router LP ID, get the local router ID
-tw_lpid getRouterID(tw_lpid router_lpid)
-{
-  int node_id=mapping(router_lpid);
-  
-  int router_id=router_lpid-(node_id * nlp_terminal_per_pe);
-  
-  return router_id;
-}
-
-// Given terminal LP ID, get the local terminal ID
-tw_lpid getTerminalID(tw_lpid terminal_lpid)
-{
-  int node_id=mapping(terminal_lpid);
-
-  int terminal_id=terminal_lpid-((node_id+1)*nlp_router_per_pe);
-
-  return terminal_id;
-}
-
-//Given a lp id check if it is mapped to a router id or a terminal
-int check_router_lpid(tw_lpid gid)
-{
-   int node_id=mapping(gid);
-  
-   int offset=node_id * (nlp_router_per_pe + nlp_terminal_per_pe);
-  
-   if((gid-offset) < nlp_router_per_pe)
-     return 1;
-  
    return 0;
 }
 
-// Given local router id, get its LP ID
-tw_lpid getRouterLPID(tw_lpid local_router_id)
+int get_router_rem()
 {
-  int global_router_id=local_router_id + ((int)(local_router_id/nlp_router_per_pe)*nlp_terminal_per_pe);
-  
-  return global_router_id;
+  if(router_rem > 0 && router_rem <= g_tw_mynode)
+   return router_rem;
+
+  return 0;
 }
 
+int getTerminalID(tw_lpid lpid)
+{
+  return lpid - total_routers;
+}
+
+int getRouterID(tw_lpid terminal_id)
+{
+  int tid = getTerminalID(terminal_id);
+  return tid/NUM_TERMINALS; 
+}
+
+tw_peid mapping( tw_lpid gid)
+{
+   int rank;
+   int offset;
+   int rem = 0;
+   int nlp_per_pe;
+   int N_nodes = tw_nnodes();
+
+   if(gid < total_routers)
+    {
+     rank = gid / nlp_router_per_pe;
+
+     rem = router_rem;
+
+     if(nlp_router_per_pe == (total_routers/N_nodes))
+            offset = (nlp_router_per_pe + 1) * router_rem;
+     else
+	    offset = nlp_router_per_pe * router_rem;
+
+     nlp_per_pe = nlp_router_per_pe;
+    }
+    else
+     {
+     rank = getTerminalID(gid)/nlp_terminal_per_pe;	
+
+     rem = terminal_rem;
+
+     if(nlp_terminal_per_pe == (total_terminals/N_nodes))
+            offset = total_routers + (nlp_terminal_per_pe + 1) * terminal_rem;
+     else
+  	    offset = total_routers + nlp_terminal_per_pe * terminal_rem;     
+
+     nlp_per_pe = nlp_terminal_per_pe;
+     }
+
+   if(rem > 0)
+    {
+     if(g_tw_mynode >= rem)
+        {
+	  if(gid < offset) 
+	    rank = gid / (nlp_per_pe + 1);
+	  else
+	    rank = rem + ((gid - offset)/nlp_per_pe);
+	}
+     else
+ 	 {
+	   if(gid >= offset)
+	     rank = rem + ((gid - offset)/(nlp_per_pe - 1)); 
+	 }
+    }
+/*   if(gid <= 369 && gid >= 264 && rank != 0)
+     printf("\n ERROR INCORRECT RANK %d LPID %d", rank, gid);
+*/
+   return rank;
+ }
 //////////////////////////////////////// Get router in the group which has a global channel to group id gid /////////////////////////////////
 tw_lpid getRouterFromGroupID(int gid, router_state * r)
 {
@@ -118,8 +131,6 @@ void router_credit_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
 
   int dest, credit_delay;
 
-  int ts_inc = 0;
-
  // Notify sender terminal about available buffer space
  
  if(msg->last_hop == TERMINAL)
@@ -142,6 +153,8 @@ void router_credit_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
      }
     else
       printf("\n Invalid message type");
+
+  msg->saved_credit_time = s->next_credit_available_time[output_chan];
 
   s->next_credit_available_time[output_chan] = max(s->next_credit_available_time[output_chan], tw_now(lp));
 
@@ -174,6 +187,7 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
   tw_event *e;
   terminal_message *m;
 
+  bf->c3 = 1;
   // Before generating a packet, check if the input queue is available
    int chan=-1, i;
    for(i=0; i<NUM_VC; i++)
@@ -184,12 +198,21 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
        break;
       }
     }
+
+  int terminal_grp_id = (int)lp->gid / (NUM_TERMINALS * NUM_ROUTER);
+
+  int next_group_begin = (terminal_grp_id + 1) * NUM_TERMINALS * NUM_ROUTER;
+
+   int next_group_end = (terminal_grp_id + 2) * NUM_TERMINALS * NUM_ROUTER - 1;
+
   if(chan != -1) // If the input queue is available
   {
    // Send the packet out
    s->output_vc_state[chan] = VC_ACTIVE;
 
-   e = tw_event_new(lp->gid, 0, lp);
+   ts = 0.1 + tw_rand_exponential(lp->rng, (double)MEAN_INTERVAL/1000);
+
+   e = tw_event_new(lp->gid, ts, lp);
   
    m = tw_event_data(e);
   
@@ -197,19 +220,19 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
 
    m->saved_vc=chan;
 
+   msg->saved_vc = chan;
+
    m->src_terminal_id=(int)lp->gid;
 
    // Set up random destination
-   dst_lp = tw_rand_integer(lp->rng,0, total_routers+total_terminals-1);
+   //dst_lp = tw_rand_integer(lp->rng, total_routers + next_group_begin, total_routers+next_group_end);
+   dst_lp = tw_rand_integer(lp->rng, total_routers, total_routers+total_terminals-1);
 
-   int isRouter=check_router_lpid(dst_lp);
-
-   while((dst_lp==lp->gid) || (isRouter==1))
-   {
-    dst_lp = tw_rand_integer(lp->rng,0, total_routers+total_terminals-1);
-  
-    isRouter=check_router_lpid(dst_lp);
-   }
+   // Make sure the message is not being sent to itself
+   while(dst_lp==lp->gid)
+    {
+       dst_lp = tw_rand_integer(lp->rng, total_routers, total_routers+total_terminals-1);
+    }
   
    // record start time
    m->travel_start_time = tw_now(lp);
@@ -225,7 +248,7 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
 
 #if DEBUG
   if(m->packet_ID == TRACK)
-    printf("\n (%lf) [Terminal %d]: Packet %lld generated ", tw_now(lp), lp->gid, m->packet_ID);
+    printf("\n (%lf) [Terminal %d]: Packet %lld generated ", tw_now(lp), (int)lp->gid, m->packet_ID);
 #endif
 
   // One more packet is generating 
@@ -236,7 +259,9 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
   N_generated_storage[index]++;
 
   // schedule next GENERATE event
-  e = tw_event_new(lp->gid, MEAN_INTERVAL, lp);
+  ts = tw_rand_exponential(lp->rng, (double)MEAN_INTERVAL);
+
+  e = tw_event_new(lp->gid, ts, lp);
   
   m = tw_event_data(e);
   
@@ -247,7 +272,13 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
  else
   {
     //schedule a generate event after a certain delay
-     e = tw_event_new(lp->gid, RESCHEDULE_DELAY, lp);
+     bf->c3 = 0;
+
+     ts = RESCHEDULE_DELAY + tw_rand_exponential(lp->rng, (double)RESCHEDULE_DELAY/10);
+
+     //printf("\n (%lf) [Terminal %d]: Generate event rescheduled ", tw_now(lp), (int)lp->gid);
+
+     e = tw_event_new(lp->gid, ts, lp);
 
      m = tw_event_data(e);
 
@@ -262,7 +293,7 @@ void packet_send(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp *
 #if DEBUG
  if( msg->packet_ID == TRACK )
   {
-    printf("\n (%lf) [Terminal %d] Packet %lld being sent to source router %d Output VC : %d \n", tw_now(lp), (int)lp->gid, msg->packet_ID,  getRouterID(s->router_id), msg->saved_vc);
+    printf("\n (%lf) [Terminal %d] {Node %d} Packet %lld being sent to source router %d Output VC : %d \n", tw_now(lp), (int)lp->gid, (int)g_tw_mynode, msg->packet_ID,  (int)s->router_id, (int)msg->saved_vc);
   }
 #endif
 
@@ -285,9 +316,16 @@ void packet_send(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp *
     printf("\n (%lf) [Terminal %d] VC %d buffer status %d ", tw_now(lp), (int)lp->gid, msg->packet_ID, vc, s->vc_occupancy[vc]);
   }
 #endif
-  ts = TERMINAL_DELAY;   
 
-  e = tw_event_new(s->router_id, ts, lp);
+  msg->saved_available_time = s->terminal_available_time;
+
+  s->terminal_available_time = max(s->terminal_available_time, tw_now(lp));
+
+  ts = TERMINAL_DELAY + tw_rand_exponential(lp->rng, (double)TERMINAL_DELAY/1000);   
+
+  s->terminal_available_time += 1;
+
+  e = tw_event_new(s->router_id, s->terminal_available_time + ts - tw_now(lp), lp);
 
   m = tw_event_data(e);
 
@@ -309,9 +347,9 @@ void packet_send(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp *
   m->last_hop = TERMINAL;
 
   m->input_chan = -1;
-  
+ 
   s->output_vc_state[vc] = VC_IDLE;
-  
+
   if(s->vc_occupancy[vc] == VC_BUF_SIZE)
   {
     s->output_vc_state[vc] = VC_CREDIT;
@@ -361,7 +399,9 @@ void packet_arrive(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp
 
   tw_event_send(e);  
 
-  buf_e = tw_event_new(msg->intm_lp_id, LOCAL_DELAY, lp);
+  ts = LOCAL_DELAY + tw_rand_exponential(lp->rng, (double)LOCAL_DELAY/100);
+
+  buf_e = tw_event_new(msg->intm_lp_id, ts, lp);
 
   buf_msg = tw_event_data(buf_e);
 
@@ -405,7 +445,7 @@ if(msg->packet_ID == TRACK)
       total_time += tw_now(lp) - msg->travel_start_time;
   
       if (max_latency<tw_now(lp) - msg->travel_start_time)
-        max_latency=tw_now(lp) - msg->travel_start_time;
+         max_latency=tw_now(lp) - msg->travel_start_time;
  
       total_hops += msg->my_N_hop;
      
@@ -424,7 +464,9 @@ void terminal_setup(terminal_state * s, tw_lp * lp)
     s->terminal_id=((int)lp->gid);  
  
     // Assign the global router ID
-    s->router_id=getRouterLPID_Terminal(lp->gid);
+    s->router_id=getRouterID(lp->gid);
+
+    //printf("\n (%lf) [Terminal %d] assigned router id %d ", tw_now(lp), (int)lp->gid, (int)s->router_id);
  
     s->packet_counter = 0;
 
@@ -446,7 +488,7 @@ void terminal_init(terminal_state * s, tw_lp * lp)
     terminal_setup(s, lp);
 
   /** Start a GENERATE event on each LP **/
-    ts = tw_rand_exponential(lp->rng, MEAN_INTERVAL);
+    ts = tw_rand_exponential(lp->rng, (double)MEAN_INTERVAL);
 
     e = tw_event_new(lp->gid, ts, lp);
    
@@ -495,9 +537,9 @@ void terminal_event(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_l
       break;
 
     case BUFFER:
-      terminal_buf_update(s, bf, msg, lp);
+     terminal_buf_update(s, bf, msg, lp);
      break;
-  
+
     default:
        printf("\n LP %d Terminal message type not supported", lp->gid);
     }
@@ -549,7 +591,7 @@ int get_input_chan(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp *
    {
      sender = msg->intm_lp_id;
 
-     input_chan = NUM_VC * (getRouterID(sender) % NUM_ROUTER);
+     input_chan = NUM_VC * (sender % NUM_ROUTER);
    }
     else if(msg->last_hop == GLOBAL)
        {
@@ -557,12 +599,12 @@ int get_input_chan(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp *
 
 	 for(i=0; i<GLOBAL_CHANNELS; i++)
          {
-	   if(s->global_channel[i]/NUM_ROUTER == (getRouterID(sender)/NUM_ROUTER))
+	   if(s->global_channel[i]/NUM_ROUTER == (sender/NUM_ROUTER))
 	     input_chan = NUM_VC * (NUM_ROUTER + i);
 	 }
 
 	if(input_chan == -1)
-	  printf("\n (%lf) [Router %d] Input channel not found for packet %lld sender %d ", tw_now(lp), lp->gid, msg->packet_ID, getRouterID(sender));
+	  printf("\n (%lf) [Router %d] Input channel not found for packet %lld sender %d ", tw_now(lp), lp->gid, msg->packet_ID, sender);
        }
 
   return input_chan;
@@ -573,8 +615,10 @@ void router_reschedule_event(router_state * s, tw_bf * bf, terminal_message * ms
   terminal_message * m;
 
   tw_event * e;
- 
-  e = tw_event_new(lp->gid, RESCHEDULE_DELAY, lp);
+
+  tw_stime ts = RESCHEDULE_DELAY + tw_rand_exponential(lp->rng, (double)RESCHEDULE_DELAY/10);
+
+  e = tw_event_new(lp->gid, ts, lp);
 
   m = tw_event_data(e);
 
@@ -600,8 +644,8 @@ void router_reschedule_event(router_state * s, tw_bf * bf, terminal_message * ms
 
   tw_event_send(e);
 
- if(msg->packet_ID == TRACK)
-  printf("\n (%lf) [Router %d] rescheduled packet %lld ", tw_now(lp), lp->gid, msg->packet_ID);
+/* if(msg->packet_ID == TRACK)
+  printf("\n (%lf) [Router %d] rescheduled packet %lld ", tw_now(lp), lp->gid, msg->packet_ID);*/
 
 }
 
@@ -611,11 +655,11 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
   tw_event *e;
   terminal_message *m;
 
-  int dest_router_id=getRouterLPID_Terminal(msg->dest_terminal_id);
+  int dest_router_id=getRouterID(msg->dest_terminal_id);
 
-  int dst_lp;
+  int dst_lp=-1;
 
-  int dest_group_id=getRouterIDFromTerminal(msg->dest_terminal_id)/NUM_ROUTER;
+  int dest_group_id=getRouterID(msg->dest_terminal_id)/NUM_ROUTER;
 
   int i, global=0, t_send=0;
   int output_chan=-1;
@@ -623,6 +667,8 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
   int delay= LOCAL_DELAY;
 
   int input_chan = msg->input_chan;
+
+  bf->c3 = 1;
 
   // Send to a terminal
   if(dest_router_id == lp->gid)
@@ -637,9 +683,9 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
   // Send to a local router
   if(!t_send && dest_group_id != s->group_id)
   {
-   dst_lp=getRouterLPID(getRouterFromGroupID(dest_group_id,s));  
+   dst_lp=getRouterFromGroupID(dest_group_id,s);  
  
-   output_chan = NUM_VC * (getRouterID(dst_lp)%NUM_ROUTER);
+   output_chan = NUM_VC * (dst_lp%NUM_ROUTER);
   }
   
  // Send over a global channel
@@ -649,7 +695,7 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
        {
          if(s->global_channel[i]/NUM_ROUTER == dest_group_id)
          {
-           dst_lp=getRouterLPID(s->global_channel[i]);
+           dst_lp=s->global_channel[i];
            
 	   output_chan = NUM_VC * (NUM_ROUTER + i);
            
@@ -664,35 +710,37 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
    {
       dst_lp=dest_router_id;
 
-      output_chan = NUM_VC * (getRouterID(dst_lp)%NUM_ROUTER);
+      output_chan = NUM_VC * (dst_lp%NUM_ROUTER);
    }
      
   // Allocate output Virtual Channel
 #if DEBUG
-  if( msg->packet_ID == TRACK && !t_send)
+ if( msg->packet_ID == TRACK && !t_send)
   {
    printf("\n (%lf) [Router %d] Packet %lld being sent to intermediate group router %d Final destination router %d Output Channel Index %d \n", 
-              tw_now(lp), (int)lp->gid, msg->packet_ID, getRouterID(dst_lp), 
-	      getRouterIDFromTerminal(msg->dest_terminal_id), output_chan);
+              tw_now(lp), (int)lp->gid, msg->packet_ID, dst_lp, 
+	      getRouterID(msg->dest_terminal_id), output_chan);
   }
 #endif
   // If the output virtual channel is not available, then hold the input virtual channel too
    if(s->output_vc_state[output_chan] != VC_IDLE)
     {
        // Re-schedule the event, keep holding input virtual channel
-        router_reschedule_event(s, bf, msg, lp);
-        
+        bf->c3 = 0;
+  
+  	router_reschedule_event(s, bf, msg, lp);
+  
         return;
     }
 
  s->input_vc_state[input_chan] = VC_IDLE;
 
- int buf_size = s->vc_occupancy[output_chan];
-
  // If source router doesn't have global channel and buffer space is available, then assign to appropriate intra-group virtual channel 
+  msg->saved_available_time = s->next_output_available_time[output_chan];
+
   s->output_vc_state[output_chan] = VC_ACTIVE;
 
-  ts = delay;
+  ts = delay + tw_rand_exponential(lp->rng, (double)delay/1000);
 
   s->next_output_available_time[output_chan] = max(s->next_output_available_time[output_chan], tw_now(lp));
 
@@ -712,6 +760,8 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
    }
 
   m->saved_vc = output_chan;
+
+  msg->old_vc = output_chan;
 
   m->intm_lp_id = lp->gid;
 
@@ -752,11 +802,16 @@ void router_packet_receive(router_state * s, tw_bf * bf, terminal_message * msg,
 {
   // STEP 1: Allocate an input virtual channel 
   int input_chan = get_input_chan(s, bf, msg, lp);
+  
+  bf->c3 = 1;
 
   if(s->input_vc_state[input_chan] != VC_IDLE)
    {
      // Re-schedule the event
+     bf->c3 = 0;
+
      router_reschedule_event(s, bf, msg, lp);
+
      return;
    }
 
@@ -765,19 +820,23 @@ void router_packet_receive(router_state * s, tw_bf * bf, terminal_message * msg,
   // STEP 2: Route Computation
   s->input_vc_state[input_chan]=VC_ALLOC;
 
-  tw_stime ts = 0;
+  //tw_stime ts = 0.1 + tw_rand_exponential(lp->rng, (double)0.1);
 
   tw_event *e, * buf_e;
 
   terminal_message *m;
 
+  msg->saved_available_time = s->next_input_available_time[input_chan];
+
   s->next_input_available_time[input_chan] = max(s->next_input_available_time[input_chan], tw_now(lp));
 
   s->next_input_available_time[input_chan] += 0.5;
 
-  e = tw_event_new(lp->gid, s->next_input_available_time[input_chan] + ts - tw_now(lp), lp);
+  e = tw_event_new(lp->gid, s->next_input_available_time[input_chan] - tw_now(lp), lp);
 
   m = tw_event_data(e);
+
+  msg->input_chan = input_chan;
 
   m->saved_vc = msg->saved_vc;
 
@@ -812,12 +871,10 @@ void router_setup(router_state * r, tw_lp * lp)
 {
    r->router_id=((int)lp->gid);
    
-   int local_router_id=getRouterID(lp->gid);
-
-   r->group_id=getRouterID(lp->gid)/NUM_ROUTER;
+   r->group_id=lp->gid/NUM_ROUTER;
 
    int i, j;
-   int offset=(local_router_id%NUM_ROUTER) * (GLOBAL_CHANNELS/2) +1;
+   int offset=(lp->gid%NUM_ROUTER) * (GLOBAL_CHANNELS/2) +1;
   
    for(i=0; i < RADIX; i++)
     {
@@ -841,12 +898,12 @@ void router_setup(router_state * r, tw_lp * lp)
     {
       if(i%2!=0)
           {
-             r->global_channel[i]=(local_router_id + (offset*NUM_ROUTER))%total_routers;
+             r->global_channel[i]=(lp->gid + (offset*NUM_ROUTER))%total_routers;
              offset++;
           }
           else
            {
-             r->global_channel[i]=local_router_id-((offset)*NUM_ROUTER);
+             r->global_channel[i]=lp->gid-((offset)*NUM_ROUTER);
            }
         if(r->global_channel[i]<0)
          {
@@ -854,9 +911,10 @@ void router_setup(router_state * r, tw_lp * lp)
 	 }
    
   #if PRINT_ROUTER_TABLE
-	fprintf(dragonfly_event_log, "\n Router %d setup ", lp->gid);
+	//fprintf(dragonfly_event_log, "\n Router %d setup ", lp->gid);
 
-	fprintf(dragonfly_event_log, "\n Router %d connected to Router %d Group %d to Group %d ", local_router_id, r->global_channel[i], r->group_id, (r->global_channel[i]/NUM_ROUTER));
+
+	//fprintf(dragonfly_event_log, "\n Router %d connected to Router %d Group %d to Group %d ", local_router_id, r->global_channel[i], r->group_id, (r->global_channel[i]/NUM_ROUTER));
    #endif
     }
 }	
@@ -865,15 +923,15 @@ void router_event(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * 
   switch(msg->type)
    {
 	   case R_SEND: // Router has sent a packet to an intra-group router (local channel)
- 		   router_packet_send(s, bf, msg, lp);
+ 		 router_packet_send(s, bf, msg, lp);
            break;
 
 	   case R_ARRIVE: // Router has received a packet from an intra-group router (local channel)
-	          router_packet_receive(s, bf, msg, lp);
+	        router_packet_receive(s, bf, msg, lp);
 	   break;
 	
 	   case BUFFER:
-		  router_buf_update(s, bf, msg, lp);
+	        router_buf_update(s, bf, msg, lp);
 	   break;
 
 	   default:
@@ -882,12 +940,147 @@ void router_event(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * 
    }	   
 }
 
-void router_rc_event(router_state* s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+/////////////////////////////////////////// REVERSE EVENT HANDLERS ///////////////////////////////////
+//
+void terminal_rc_event_handler(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
 {
+   int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
+
+   switch(msg->type)
+   {
+	   case T_GENERATE:
+		 {
+		  if(bf->c3 == 1)
+		  {
+		     int vc = msg->saved_vc;
+
+		     N_generated_storage[index]--;
+  	         
+		     s->packet_counter--;
+		 
+		     s->output_vc_state[vc] = VC_IDLE;
+
+		     tw_rand_reverse_unif(lp->rng);
+
+		     tw_rand_reverse_unif(lp->rng);
+		  }
+		    tw_rand_reverse_unif(lp->rng);
+
+		 }
+	   break;
+	   
+	   case T_SEND:
+	         {
+		   int vc = msg->saved_vc;
+		   
+		   s->vc_occupancy[vc]--;
+		   
+		   tw_rand_reverse_unif(lp->rng);
+		   
+		   s->terminal_available_time = msg->saved_available_time;
+
+		   s->output_vc_state[vc] = VC_ACTIVE;
+		 }
+	   break;
+
+	   case T_ARRIVE:
+	   	 {
+		    tw_rand_reverse_unif(lp->rng);	 
+		 }
+           break;
+
+	   case T_PROCESS:
+	        if ( bf->c3 == 0 )
+		   {
+		      N_finished--;
+		      
+		      N_finished_storage[index]--;
+		      
+		      total_time -= tw_now(lp) - msg->travel_start_time;
+
+		      total_hops -= msg->my_N_hop;
+	         }
+	   break;
+
+	   case BUFFER:
+	        {
+		   int msg_indx = msg->vc_index;
+
+		   s->vc_occupancy[msg_indx]++;
+
+		   if(s->vc_occupancy[msg_indx] == VC_BUF_SIZE)
+         	     {
+			s->output_vc_state[msg_indx] = VC_CREDIT;
+	             }
+
+		}
+   }
 }
 
+void router_rc_event_handler(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+{
+  switch(msg->type)
+    {
+            case R_SEND:
+		    {
+		       tw_rand_reverse_unif(lp->rng);
+
+			if(bf->c3 == 1)
+			 {    
+			   int input_chan = msg->input_chan;
+
+			   int output_chan = msg->old_vc;
+
+			   s->input_vc_state[input_chan] = VC_ALLOC;		    
+
+			   s->output_vc_state[output_chan] = VC_IDLE;
+
+			   s->next_output_available_time[output_chan] = msg->saved_available_time;
+
+			   s->vc_occupancy[output_chan]--;
+
+			   s->next_credit_available_time[output_chan] = msg->saved_credit_time;
+			 }
+		    }
+	    break;
+
+	    case R_ARRIVE:
+	    	    {
+		      if(bf->c3 == 1)
+		       {
+		        int input_chan = msg->input_chan;
+		      
+		        s->next_input_available_time[input_chan] = msg->saved_available_time;
+
+		        s->input_vc_state[input_chan] = VC_IDLE;
+
+			msg->my_N_hop--;
+		       }
+		      else
+		       {
+		        tw_rand_reverse_unif(lp->rng);
+		       }
+		    }
+	    break;
+
+	    case BUFFER:
+	    	   {
+		      int msg_indx = msg->vc_index;
+
+		      s->vc_occupancy[msg_indx]++;
+
+		      if(s->vc_occupancy[msg_indx] == VC_BUF_SIZE)
+                        {
+                          s->output_vc_state[msg_indx] = VC_CREDIT;
+                        }
+		   
+		   }
+	    break;
+    }
+}
+////////////////////////////////////////////////////// MAIN ///////////////////////////////////////////////////////
 ////////////////////////////////////////////////////// LP TYPES /////////////////////////////////////////////////
-tw_lptype terminals_lps[] =
+tw_lptype dragonfly_lps[] =
 {
    // Terminal handling functions
    {
@@ -895,7 +1088,7 @@ tw_lptype terminals_lps[] =
    
     (event_f) terminal_event,
    
-    (revent_f) terminal_rc_event,
+    (revent_f) terminal_rc_event_handler,
    
     (final_f) final,
    
@@ -908,7 +1101,7 @@ tw_lptype terminals_lps[] =
    
      (event_f) router_event,
    
-     (revent_f) router_rc_event,
+     (revent_f) router_rc_event_handler,
    
      (final_f) final,
    
@@ -927,54 +1120,126 @@ const tw_optdef app_opt [] =
    TWOPT_END()
 };
 
-////////////////////////////////////////////////////// MAIN ///////////////////////////////////////////////////////
-int main(int argc, char **argv, char **env)
+tw_lp * dragonfly_mapping_to_lp(tw_lpid lpid)
 {
-     char log[32];
+  int index;
+
+  if(lpid < total_routers)
+   index = lpid - g_tw_mynode * nlp_router_per_pe - get_router_rem();
+  else
+   index = nlp_router_per_pe + (lpid - g_tw_mynode * nlp_terminal_per_pe - get_terminal_rem() - total_routers);
+
+ // printf("\n Inverse mapping index %d for LP %d g_tw_mynode %d ", index, (int)lpid, g_tw_mynode); 
+  return g_tw_lp[index];
+}
+
+void dragonfly_mapping(void)
+{
+  tw_lpid kpid;
+
+  tw_pe * pe;
+
+  int nkp_per_pe=16;
+
+  for(kpid = 0; kpid < nkp_per_pe; kpid++)
+    tw_kp_onpe(kpid, g_tw_pe[0]);
+
+  int i;
+
+  //printf("\n Node %d router start %d Terminal start %d ", g_tw_mynode, g_tw_mynode * nlp_router_per_pe + get_router_rem(), total_routers + g_tw_mynode * nlp_terminal_per_pe + get_terminal_rem());
+  for(i = 0; i < nlp_router_per_pe; i++)
+   {
+     kpid = i % g_tw_nkp;
+
+     pe = tw_getpe(kpid % g_tw_npe);
+
+     tw_lp_onpe(i, pe, g_tw_mynode * nlp_router_per_pe + i + get_router_rem());
+
+     tw_lp_onkp(g_tw_lp[i], g_tw_kp[kpid]);
+
+    tw_lp_settype(i, &dragonfly_lps[1]);
+
+#ifdef DEBUG
+//    printf("\n [Node %d] Local Router ID %d Global Router ID %d ", g_tw_mynode, i, g_tw_mynode * nlp_router_per_pe + i + get_router_rem());
+#endif
+   } 
+
+  for(i = 0; i < nlp_terminal_per_pe; i++)
+   {
+      kpid = i % g_tw_nkp;
+
+      pe = tw_getpe(kpid % g_tw_npe);
+
+      tw_lp_onpe(nlp_router_per_pe + i, pe, total_routers + g_tw_mynode * nlp_terminal_per_pe + i + get_terminal_rem());
+
+      tw_lp_onkp(g_tw_lp[nlp_router_per_pe + i], g_tw_kp[kpid]);
+
+      tw_lp_settype(nlp_router_per_pe + i, &dragonfly_lps[0]);
+
+#ifdef DEBUG
+//    printf("\n [Node %d] Local Terminal ID %d Global Terminal ID %d ", g_tw_mynode, nlp_router_per_pe + i, total_routers + g_tw_mynode * nlp_terminal_per_pe + i + get_terminal_rem());
+#endif
+    }
+}
+
+/////////////////////////////////////////////////////// REVERSE COMPUTATION ///////////////////////////////////////
+int main(int argc, char **argv)
+{
+     //char log[32];
      tw_opt_add(app_opt);
    
      tw_init(&argc, &argv);
-	 
-     MEAN_INTERVAL = 10;
-   
+
+     MEAN_INTERVAL = 5;
+
      total_routers=NUM_ROUTER*num_groups;
-   
+
      total_terminals=NUM_ROUTER*NUM_TERMINALS*num_groups;
 
      nlp_terminal_per_pe = total_terminals/tw_nnodes()/g_tw_npe;
-   
+
+     terminal_rem = total_terminals % (tw_nnodes()/g_tw_npe);
+
+     if(g_tw_mynode < terminal_rem)
+       nlp_terminal_per_pe++;
+
      nlp_router_per_pe = total_routers/tw_nnodes()/g_tw_npe;
+
+      router_rem = total_routers % (tw_nnodes()/g_tw_npe);
+
+      if(g_tw_mynode < router_rem)
+        nlp_router_per_pe++;
+
+      range_start=nlp_router_per_pe + nlp_terminal_per_pe;
+
+    g_tw_mapping=CUSTOM;
+    
+    g_tw_custom_initial_mapping=&dragonfly_mapping;
+    
+    g_tw_custom_lp_global_to_local_map=&dragonfly_mapping_to_lp;
+  
+     g_tw_events_per_pe = (nlp_terminal_per_pe/g_tw_npe) * (g_tw_ts_end/MEAN_INTERVAL);
+
+     tw_define_lps(range_start, sizeof(terminal_message), 0);
+
    
-     g_tw_events_per_pe = 5 * (nlp_terminal_per_pe/g_tw_npe * g_tw_ts_end/MEAN_INTERVAL) + opt_mem;
-
-     range_start=nlp_router_per_pe + nlp_terminal_per_pe; 
-
 #if DEBUG
-     sprintf( log, "dragonfly-log.%d", g_tw_mynode );
-     dragonfly_event_log=fopen(log, "w+");
+     //sprintf( log, "dragonfly-log.%d", g_tw_mynode );
+     //dragonfly_event_log=fopen(log, "w+");
 
-     if(dragonfly_event_log == NULL)
-	tw_error(TW_LOC, "\n Failed to open dragonfly event log file \n");
+     //if(dragonfly_event_log == NULL)
+	//tw_error(TW_LOC, "\n Failed to open dragonfly event log file \n");
 #endif
-
-     tw_define_lps(nlp_terminal_per_pe+nlp_router_per_pe, sizeof(terminal_message), 0);
 
 
 #if DEBUG
-          printf("\n g_tw_nlp is %lu g_tw_npe %lu g_tw_mynode: %d \n ", g_tw_nlp, g_tw_npe, g_tw_mynode);
+     if(tw_ismaster())
+	{
+          printf("\n total_routers %d total_terminals %d g_tw_nlp is %d g_tw_npe %d g_tw_mynode: %d \n ", total_routers, total_terminals, (int)g_tw_nlp, (int)g_tw_npe, (int)g_tw_mynode);
 
-	  printf("\n nlp_terminal_per_pe is %d, nlp_router_per_pe is %d \n ", nlp_terminal_per_pe, nlp_router_per_pe);
+	  printf("\n Arrival rate %f g_tw_mynode %d total %d nlp_terminal_per_pe is %d, nlp_router_per_pe is %d \n ", MEAN_INTERVAL, (int)g_tw_mynode, range_start, nlp_terminal_per_pe, nlp_router_per_pe);
+	}
 #endif
-
-     int i;
-     
-     for(i = 0; i < nlp_router_per_pe; i++)
-      tw_lp_settype(i, &terminals_lps[1]);
-
-
-     for(i = nlp_router_per_pe; i < g_tw_nlp; i++)
-	 tw_lp_settype(i, &terminals_lps[0]);
-
     tw_run();
 
     if(tw_ismaster())
@@ -990,6 +1255,8 @@ int main(int argc, char **argv, char **env)
     unsigned long long N_total_finish,N_total_hop;
 
    tw_stime total_time_sum,g_max_latency;
+
+   int i;
 
    for( i=0; i<N_COLLECT_POINTS; i++ )
     {
@@ -1053,6 +1320,7 @@ int main(int argc, char **argv, char **env)
             printf("\nMax latency is %lf\n\n",g_max_latency);
 
           }
+   tw_end();
 
    return 0;
 }

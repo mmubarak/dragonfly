@@ -4,9 +4,9 @@
 #include <ross.h>
 
 // dragonfly basic configuration parameters
-#define GLOBAL_CHANNELS 16
-#define NUM_ROUTER 32
-#define NUM_TERMINALS 16
+#define GLOBAL_CHANNELS 4
+#define NUM_ROUTER 8
+#define NUM_TERMINALS 4
 
 #define PACKET_SIZE 1.0
 
@@ -17,8 +17,8 @@
 #define GLOBAL_DELAY 100.0
 #define RESCHEDULE_DELAY 1
 
-// time to process a packet
-#define MEAN_PROCESS 0.0
+// time to process a packet at destination terminal
+#define MEAN_PROCESS 0
 
 #define N_COLLECT_POINTS 20
 
@@ -67,6 +67,7 @@ struct terminal_state
 enum event_t
 {
   T_GENERATE,
+  RESCHEDULE,
   T_ARRIVE,
   T_SEND,
 
@@ -105,6 +106,7 @@ struct terminal_message
 
   // Intermediate LP ID from which this message is coming
   unsigned int intm_lp_id;
+  int old_vc;
   int saved_vc;
 
   int last_hop;
@@ -114,6 +116,9 @@ struct terminal_message
    unsigned int credit_delay;
 
    int input_chan;
+   
+   tw_stime saved_available_time;
+   tw_stime saved_credit_time;
 };
 
 struct router_state
@@ -128,7 +133,6 @@ struct router_state
    // NUM_ROUTER+GLOBAL_CHANNELS -- RADIX-1 terminal indices (router-terminal channels)
    tw_stime next_output_available_time[RADIX];
    tw_stime next_input_available_time[RADIX];
-
    tw_stime next_credit_available_time[RADIX];
 
    unsigned int credit_occupancy[RADIX];   
@@ -140,13 +144,15 @@ struct router_state
 
 static int       nlp_terminal_per_pe;
 static int       nlp_router_per_pe;
-static int opt_mem = 1000000;
+static int opt_mem = 10000;
 
 tw_stime         average_travel_time = 0;
 tw_stime         total_time = 0;
 tw_stime         max_latency = 0;
 
 int range_start;
+int terminal_rem=0, router_rem=0;
+int num_terminal=0, num_router=0;
 unsigned long num_groups = NUM_ROUTER*GLOBAL_CHANNELS+1;
 int total_routers, total_terminals;
 
@@ -154,4 +160,7 @@ static unsigned long long       total_hops = 0;
 static unsigned long long       N_finished = 0;
 static unsigned long long       N_finished_storage[N_COLLECT_POINTS];
 static unsigned long long       N_generated_storage[N_COLLECT_POINTS];
+
+void dragonfly_mapping(void);
+tw_lp * dragonfly_mapping_to_lp(tw_lpid lpid);
 #endif
