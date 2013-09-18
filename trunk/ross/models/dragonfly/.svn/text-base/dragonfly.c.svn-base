@@ -228,12 +228,6 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
    //dst_lp = tw_rand_integer(lp->rng, total_routers + next_group_begin, total_routers+next_group_end);
    dst_lp = tw_rand_integer(lp->rng, total_routers, total_routers+total_terminals-1);
 
-   // Make sure the message is not being sent to itself
-   while(dst_lp==lp->gid)
-    {
-       dst_lp = tw_rand_integer(lp->rng, total_routers, total_routers+total_terminals-1);
-    }
-  
    // record start time
    m->travel_start_time = tw_now(lp);
   
@@ -1190,7 +1184,7 @@ int main(int argc, char **argv)
    
      tw_init(&argc, &argv);
 
-     MEAN_INTERVAL = 5;
+     MEAN_INTERVAL = 10;
 
      total_routers=NUM_ROUTER*num_groups;
 
