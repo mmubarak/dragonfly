@@ -8,8 +8,8 @@
 #define NUM_ROUTER 8
 #define NUM_TERMINALS 4
 
-#define MESSAGE_SIZE 256.0
-#define PACKET_SIZE 256.0
+#define MESSAGE_SIZE 512.0
+#define PACKET_SIZE 512.0
 #define CHUNK_SIZE 32.0
 
 // delay parameters
@@ -18,9 +18,9 @@
 //#define GLOBAL_DELAY 10.0
 
 //2 GB/secs
-#define GLOBAL_BANDWIDTH 1.611 
-#define LOCAL_BANDWIDTH 6.6111
-#define NODE_BANDWIDTH 1.074
+#define GLOBAL_BANDWIDTH 4.7 
+#define LOCAL_BANDWIDTH 5.25
+#define NODE_BANDWIDTH 5.25
 
 #define CREDIT_SIZE 8
 #define INJECTION_INTERVAL 40000
@@ -30,12 +30,12 @@
 #define MEAN_PROCESS 1.0
 #define NUM_VC 1
 
-#define N_COLLECT_POINTS 20
+#define N_COLLECT_POINTS 100
 
 // virtual channel information
-#define LOCAL_VC_SIZE 128
-#define GLOBAL_VC_SIZE 128
-#define TERMINAL_VC_SIZE 128
+#define LOCAL_VC_SIZE 512
+#define GLOBAL_VC_SIZE 1024
+#define TERMINAL_VC_SIZE 256
 
 // radix of each router
 #define RADIX (NUM_VC * NUM_ROUTER)+ (NUM_VC*GLOBAL_CHANNELS) + (NUM_VC * NUM_TERMINALS)
@@ -48,12 +48,11 @@
 
 #define NUM_ROWS NUM_ROUTER*NUM_TERMINALS
 #define NUM_COLS (NUM_ROUTER*NUM_TERMINALS)+1
-#define TERMINAL_WAITING_PACK_COUNT 50000
-#define ROUTER_WAITING_PACK_COUNT 500000
+#define TERMINAL_WAITING_PACK_COUNT 1 << 20
+#define ROUTER_WAITING_PACK_COUNT 1 << 22
 
 // arrival rate
 static double MEAN_INTERVAL=10.0;
-
 
 typedef enum event_t event_t;
 typedef struct terminal_state terminal_state;
@@ -74,7 +73,8 @@ struct terminal_state
    // Each terminal will have an input and output channel with the router
    unsigned int vc_occupancy[NUM_VC];
    unsigned int output_vc_state[NUM_VC];
-   int terminal_available_time;
+   tw_stime terminal_available_time;
+   tw_stime next_credit_available_time;
    
    //first element of linked list
    struct waiting_packet * waiting_list;
@@ -133,7 +133,8 @@ enum TRAFFIC_PATTERN
   UNIFORM_RANDOM=1,
   WORST_CASE,
   TRANSPOSE,
-  NEAREST_NEIGHBOR
+  NEAREST_NEIGHBOR,
+  BISECTION
 };
 
 struct terminal_message
@@ -206,6 +207,7 @@ struct process_state
    tw_stime available_time;
   
    unsigned int router_id; 
+   unsigned int group_id;
 //   For matrix transpose traffic
    int row, col;
 };

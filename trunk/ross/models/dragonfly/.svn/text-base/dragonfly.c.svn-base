@@ -163,6 +163,7 @@ mpi_init( process_state * s,
 
     s->message_counter = 0;
     s->router_id = (lp->gid - total_routers - total_terminals) / NUM_TERMINALS;
+    s->group_id = (lp->gid - total_routers - total_terminals) / (NUM_TERMINALS * NUM_ROUTER);
 
     s->row = getProcID(lp->gid) / NUM_ROWS;
     s->col = getProcID(lp->gid) % NUM_COLS;
@@ -181,10 +182,10 @@ mpi_msg_send( process_state * s,
   int i;
    
   int terminal_grp_id = ((int)lp->gid - total_routers - total_terminals)/ (NUM_TERMINALS * NUM_ROUTER);
-  int next_group_begin = ((terminal_grp_id + 1) % num_groups) * NUM_TERMINALS * NUM_ROUTER;
   int offset = NUM_TERMINALS * NUM_ROUTER - 1;
   bf->c1 = 0;
   bf->c3 = 0;
+  bf->c2 = 0;
  
   if(s->message_counter >= max_packets)
     {
@@ -195,19 +196,36 @@ mpi_msg_send( process_state * s,
    // Set up random destination
    switch(traffic)
     {
-	case WORST_CASE:
+	case BISECTION:
 	   {
 		 bf->c3 = 1;
 
+		  bf->c2 = 1;
+		 int group_id = tw_rand_integer(lp->rng, 0, num_groups);
+		
+		 if(group_id == s->group_id)
+			group_id = (s->group_id + (num_groups/2)) % num_groups;
+
+  		 int next_group_begin = group_id * NUM_TERMINALS * NUM_ROUTER;
+
 		 dst_lp = tw_rand_integer(lp->rng, total_routers + next_group_begin, total_routers + next_group_begin + offset);
 
-		 if(dst_lp == lp->gid)
+	/*	 if(dst_lp == lp->gid)
  		  {
 			dst_lp = total_routers + next_group_begin + (lp->gid - total_routers) % (NUM_TERMINALS * NUM_ROUTER);	
-		  }
+		  }*/
 	   }
 	  break;
 
+	case WORST_CASE:
+	  {
+		bf->c3 = 1;
+
+		int next_group_begin = ((s->group_id + 1) % num_groups) * NUM_TERMINALS * NUM_ROUTER;
+
+		dst_lp = tw_rand_integer(lp->rng, total_routers + next_group_begin, total_routers + next_group_begin + offset);
+	  }
+	break;
 	case UNIFORM_RANDOM:
 	   {
 		bf->c3 = 1;
@@ -216,7 +234,7 @@ mpi_msg_send( process_state * s,
 		
 		if(dst_lp == lp->gid)
 		  {
-		   dst_lp = total_routers + ((s->message_counter % 10) % total_terminals);
+		   dst_lp = total_routers + (s->message_counter % total_terminals);
 		  }
 	   }
 	 break;
@@ -358,20 +376,23 @@ void router_credit_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
       printf("\n Invalid message type");
 
    // Assume it takes 0.1 ns of serialization latency for processing the credits in the queue
-//   s->next_credit_available_time[output_port] = max(tw_now(lp), s->next_credit_available_time[output_port]);
-//   s->next_credit_available_time[output_port] += 0.1;
+//     s->next_credit_available_time[output_port] += 0.1;
 
-   //buf_e = tw_event_new(dest, s->next_credit_available_time[output_port] + credit_delay - tw_now(lp) , lp);
-  ts = credit_delay + tw_rand_exponential(lp->rng, (double)credit_delay/100);
-  buf_e = tw_event_new(dest, ts, lp);
+     int output_port = msg->saved_vc / NUM_VC;
+     msg->saved_available_time = s->next_credit_available_time[output_port];
+     s->next_credit_available_time[output_port] = max(tw_now(lp), s->next_credit_available_time[output_port]);
+     ts = credit_delay + tw_rand_exponential(lp->rng, (double)credit_delay/100);
+//     buf_e = tw_event_new(dest, ts, lp);
+	
+    s->next_credit_available_time[output_port]+=ts;
+    buf_e = tw_event_new(dest, s->next_credit_available_time[output_port] - tw_now(lp) , lp);
+    buf_msg = tw_event_data(buf_e);
+    buf_msg->vc_index = msg->saved_vc;
+    buf_msg->type=BUFFER;
+    buf_msg->last_hop = msg->last_hop;
+    buf_msg->packet_ID=msg->packet_ID;
 
-  buf_msg = tw_event_data(buf_e);
-  buf_msg->vc_index = msg->saved_vc;
-  buf_msg->type=BUFFER;
-  buf_msg->last_hop = msg->last_hop;
-  buf_msg->packet_ID=msg->packet_ID;
-
-  tw_event_send(buf_e);
+    tw_event_send(buf_e);
 }
 
 void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
@@ -529,9 +550,15 @@ if( msg->packet_ID == TRACK && msg->chunk_id == num_chunks-1)
     tw_event_send(e);
   }
 
+
   int credit_delay = (1/NODE_BANDWIDTH) * CREDIT_SIZE;
   ts = credit_delay + tw_rand_exponential(lp->rng, credit_delay/100);
-  buf_e = tw_event_new(msg->intm_lp_id, credit_delay, lp);
+  
+  msg->saved_available_time = s->next_credit_available_time;
+  s->next_credit_available_time = max(s->next_credit_available_time, tw_now(lp));
+  s->next_credit_available_time += ts;
+
+  buf_e = tw_event_new(msg->intm_lp_id, s->next_credit_available_time - tw_now(lp), lp);
   buf_msg = tw_event_data(buf_e);
   buf_msg->vc_index = msg->saved_vc;
   buf_msg->type=BUFFER;
@@ -888,9 +915,10 @@ router_packet_send( router_state * s,
   if(output_port >= NUM_ROUTER && output_port < NUM_ROUTER + GLOBAL_CHANNELS)
   {
 	 //delay = GLOBAL_DELAY;
+//	 printf("\n Output port selected is %d ", output_port);
 	 bandwidth = GLOBAL_BANDWIDTH;
 	 global = 1;
-  } 
+  }
 
   // If the output virtual channel is not available, then hold the input virtual channel too
    if(s->output_vc_state[output_chan] != VC_IDLE)
@@ -1239,6 +1267,7 @@ void terminal_rc_event_handler(terminal_state * s, tw_bf * bf, terminal_message 
 		   if(bf->c1)
 		     tw_rand_reverse_unif(lp->rng);
 		   tw_rand_reverse_unif(lp->rng);
+		   s->next_credit_available_time = msg->saved_available_time;
 		 }
            break;
 
@@ -1324,6 +1353,8 @@ void router_rc_event_handler(router_state * s, tw_bf * bf, terminal_message * ms
 			msg->my_N_hop--;
 			tw_rand_reverse_unif(lp->rng);
 			tw_rand_reverse_unif(lp->rng);
+			int output_port = msg->saved_vc/NUM_VC;
+			s->next_credit_available_time[output_port] = msg->saved_available_time;
 		    }
 	    break;
 
@@ -1387,6 +1418,9 @@ void mpi_rc_event_handler(process_state * s, tw_bf * bf, terminal_message * msg,
 
 		      if(bf->c3)
 			 tw_rand_reverse_unif(lp->rng);	
+		      
+		      if(bf->c2)
+			 tw_rand_reverse_unif(lp->rng);
 
 		     int i;
 		     for(i = 0; i < num_packets; i++)
@@ -1569,7 +1603,7 @@ int main(int argc, char **argv)
      g_tw_mapping=CUSTOM;
      g_tw_custom_initial_mapping=&dragonfly_mapping;
      g_tw_custom_lp_global_to_local_map=&dragonfly_mapping_to_lp;
-     g_tw_events_per_pe = mem_factor * (nlp_terminal_per_pe/g_tw_npe) * max_packets;
+     g_tw_events_per_pe = mem_factor * 1024 * (nlp_terminal_per_pe/g_tw_npe + nlp_router_per_pe/g_tw_npe) + opt_mem;
 
      tw_define_lps(range_start, sizeof(terminal_message), 0);
 
@@ -1596,7 +1630,7 @@ int main(int argc, char **argv)
 
     if(tw_ismaster())
     {
-      printf("\nDragonfly Network Model Statistics:\n");
+      printf("\nDragonfly Network Model Statistics: Memory %lld \n", g_tw_events_per_pe);
       printf("\t%-50s %11lld\n", "Number of nodes", nlp_terminal_per_pe * g_tw_npe * tw_nnodes());
 //      printf("\n Slowest packet %lld ", max_packet);
       if(ROUTING == ADAPTIVE)
@@ -1658,6 +1692,16 @@ int main(int argc, char **argv)
                      total_generated_storage[i]-total_finished_storage[i]);
            }
 
+	tw_stime bandwidth;
+	tw_stime interval = (g_tw_ts_end / N_COLLECT_POINTS);
+	interval = interval / (1000.0 * 1000.0 * 1000.0); //convert seconds to ns
+	for( i=1; i<N_COLLECT_POINTS; i++ )
+	   {
+		bandwidth = total_finished_storage[i] - total_finished_storage[i - 1];
+		bandwidth = (bandwidth * PACKET_SIZE) / (1024.0 * 1024.0 * 1024.0);
+		bandwidth = bandwidth / interval;
+		printf("\n Interval %lf Bandwidth %lf ", interval, bandwidth);
+	   }
             // capture the steady state statistics
           unsigned long long steady_sum=0;
           for( i = N_COLLECT_POINTS/2; i<N_COLLECT_POINTS;i++)
