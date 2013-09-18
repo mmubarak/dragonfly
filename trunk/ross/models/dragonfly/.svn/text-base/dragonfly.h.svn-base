@@ -8,21 +8,27 @@
 #define NUM_ROUTER 8
 #define NUM_TERMINALS 4
 
-#define PACKET_SIZE 512.0
+#define MESSAGE_SIZE 256.0
+#define PACKET_SIZE 256.0
+#define CHUNK_SIZE 32.0
 
 // delay parameters
-#define TERMINAL_DELAY 1.0
-#define LOCAL_DELAY 1.0
-#define GLOBAL_DELAY 10.0
+//#define TERMINAL_DELAY 1.0
+//#define LOCAL_DELAY 1.0
+//#define GLOBAL_DELAY 10.0
 
 //2 GB/secs
-#define GLOBAL_BANDWIDTH 6.4424 
+#define GLOBAL_BANDWIDTH 1.611 
 #define LOCAL_BANDWIDTH 1.6111
 #define NODE_BANDWIDTH 1.074
-#define RESCHEDULE_DELAY 1
 
+#define CREDIT_SIZE 8
+#define INJECTION_INTERVAL 20000
+//16-05
+#define ROUTER_DELAY 4.0
+#define RESCHEDULE_DELAY 1.0
 // time to process a packet at destination terminal
-#define MEAN_PROCESS 4600
+#define MEAN_PROCESS 1.0
 #define NUM_VC 1
 
 #define N_COLLECT_POINTS 20
@@ -38,13 +44,13 @@
 
 // debugging parameters
 #define DEBUG 1
-#define TRACK 12728
+#define TRACK 124026
 #define PRINT_ROUTER_TABLE 1
 
-#define NUM_ROWS 32
-#define NUM_COLS 33
-
-#define HEAD_SIZE 8
+#define NUM_ROWS NUM_ROUTER*NUM_TERMINALS
+#define NUM_COLS (NUM_ROUTER*NUM_TERMINALS)+1
+#define TERMINAL_WAITING_PACK_COUNT 21000
+#define ROUTER_WAITING_PACK_COUNT 200000
 
 // arrival rate
 static double MEAN_INTERVAL=10.0;
@@ -55,7 +61,8 @@ typedef struct terminal_state terminal_state;
 typedef struct terminal_message terminal_message;
 typedef struct buf_space_message buf_space_message;
 typedef struct router_state router_state;
-typedef struct waiting_list waiting_list;
+typedef struct waiting_packet waiting_packet;
+typedef struct process_state process_state;
 
 struct terminal_state
 {
@@ -71,18 +78,16 @@ struct terminal_state
    int terminal_available_time;
    
    //first element of linked list
-   struct waiting_list * root;
+   struct waiting_packet * waiting_list;
 
   // pointer to the linked list
-   struct waiting_list * ptr;   
-
-//   For matrix transpose traffic
-   int row, col;
-};
+   struct waiting_packet * head;   
+   int wait_count;
 
 // Terminal generate, sends and arrival T_SEND, T_ARRIVAL, T_GENERATE
 // Router-Router Intra-group sends and receives RR_LSEND, RR_LARRIVE
 // Router-Router Inter-group sends and receives RR_GSEND, RR_GARRIVE
+};
 
 enum event_t
 {
@@ -96,7 +101,10 @@ enum event_t
 
   BUFFER,
   WAIT,
-  FINISH
+  FINISH,
+
+  MPI_SEND,
+  MPI_RECV
 };
 
 enum vc_status
@@ -138,17 +146,17 @@ struct terminal_message
   unsigned int dest_terminal_id;
   unsigned int src_terminal_id;
   
-  int my_N_hop;
+  short my_N_hop;
 
   // Intermediate LP ID from which this message is coming
   unsigned int intm_lp_id;
-  int old_vc;
-  int saved_vc;
+  short old_vc;
+  short saved_vc;
 
-  int last_hop;
+  short last_hop;
 
   // For buffer message
-   int vc_index;
+   short vc_index;
    int input_chan;
    int output_chan;
    
@@ -156,7 +164,9 @@ struct terminal_message
    tw_stime saved_credit_time;
 
    int intm_group_id;
-   int wait_type;
+   short wait_type;
+   short wait_loc;
+   short chunk_id;
    short route;
 };
 
@@ -184,25 +194,36 @@ struct router_state
    unsigned int output_vc_state[RADIX];
 
    //first element of linked list
-  struct waiting_list * root;
+   struct waiting_packet * waiting_list;
 
   // pointer to the linked list
-  struct waiting_list * ptr;
+   struct waiting_packet * head;
+   int wait_count;
 };
 
+struct process_state
+{
+   int message_counter;
+   tw_stime available_time;
+  
+   unsigned int router_id; 
+//   For matrix transpose traffic
+   int row, col;
+};
 
-struct waiting_list
+struct waiting_packet
 {
    terminal_message * packet;
-   struct waiting_list * next;
-   struct waiting_list * prev;
+   struct waiting_packet * next;
    int chan;
 };
 
 static int       nlp_terminal_per_pe;
 static int       nlp_router_per_pe;
+static int 	 nlp_mpi_procs_per_pe;
 static int opt_mem = 10000;
-static int mem_factor = 8;
+static int mem_factor = 32;
+static int max_packets = 0;
 
 static int ROUTING= MINIMAL;
 static int traffic= TRANSPOSE;
@@ -210,6 +231,9 @@ int minimal_count, nonmin_count;
 
 int adaptive_threshold;
 int head_delay;
+int num_packets;
+int num_chunks;
+int packet_offset;
 
 tw_stime         average_travel_time = 0;
 tw_stime         total_time = 0;
@@ -220,8 +244,7 @@ int num_vc;
 int terminal_rem=0, router_rem=0;
 int num_terminal=0, num_router=0;
 unsigned long num_groups = NUM_ROUTER*GLOBAL_CHANNELS+1;
-int total_routers, total_terminals;
-unsigned long long max_packet;
+int total_routers, total_terminals, total_mpi_procs;
 
 static unsigned long long       total_hops = 0;
 static unsigned long long       N_finished = 0;

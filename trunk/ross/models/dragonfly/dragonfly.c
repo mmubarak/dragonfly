@@ -8,7 +8,8 @@
 
 FILE * dragonfly_event_log=NULL;
 
-int get_terminal_rem()
+int 
+get_terminal_rem()
 {
 //  if(terminal_rem > 0 && gid/(num_terminal+1) > terminal_rem)
 //    return terminal_rem;
@@ -19,7 +20,8 @@ int get_terminal_rem()
    return 0;
 }
 
-int get_router_rem()
+int 
+get_router_rem()
 {
   if(router_rem > 0 && router_rem <= g_tw_mynode)
    return router_rem;
@@ -27,18 +29,28 @@ int get_router_rem()
   return 0;
 }
 
-int getTerminalID(tw_lpid lpid)
+int 
+getTerminalID(tw_lpid lpid)
 {
-  return lpid - total_routers;
+    return lpid - total_routers;
 }
 
-int getRouterID(tw_lpid terminal_id)
+int 
+getProcID(tw_lpid lpid)
 {
-  int tid = getTerminalID(terminal_id);
-  return tid/NUM_TERMINALS; 
+    return lpid - total_routers - total_terminals;
 }
 
-tw_peid mapping( tw_lpid gid)
+int 
+getRouterID(tw_lpid terminal_id)
+{
+    int tid = getTerminalID(terminal_id);
+
+    return tid/NUM_TERMINALS; 
+}
+
+tw_peid 
+mapping( tw_lpid gid)
 {
    int rank;
    int offset;
@@ -48,28 +60,42 @@ tw_peid mapping( tw_lpid gid)
 
    if(gid < total_routers)
     {
-     rank = gid / nlp_router_per_pe;
-     rem = router_rem;
+       rank = gid / nlp_router_per_pe;
+       rem = router_rem;
 
-     if(nlp_router_per_pe == (total_routers/N_nodes))
+       if(nlp_router_per_pe == (total_routers/N_nodes))
             offset = (nlp_router_per_pe + 1) * router_rem;
-     else
+       else
 	    offset = nlp_router_per_pe * router_rem;
 
-     nlp_per_pe = nlp_router_per_pe;
+       nlp_per_pe = nlp_router_per_pe;
     }
-    else
+    else if( gid >= total_routers && gid < total_routers + total_terminals)
      {
-     rank = getTerminalID(gid)/nlp_terminal_per_pe;	
-     rem = terminal_rem;
+       rank = getTerminalID(gid)/nlp_terminal_per_pe;	
+       rem = terminal_rem;
 
-     if(nlp_terminal_per_pe == (total_terminals/N_nodes))
+       if(nlp_terminal_per_pe == (total_terminals/N_nodes))
             offset = total_routers + (nlp_terminal_per_pe + 1) * terminal_rem;
-     else
+       else
   	    offset = total_routers + nlp_terminal_per_pe * terminal_rem;     
 
-     nlp_per_pe = nlp_terminal_per_pe;
+       nlp_per_pe = nlp_terminal_per_pe;
      }
+     else if( gid >= (total_routers + total_terminals) && gid < (total_routers + total_terminals + total_mpi_procs))
+	{
+	  rank = getProcID(gid)/nlp_mpi_procs_per_pe;
+	  rem = terminal_rem; //same as MPI process rem as there is one to one mapping between MPI process and terminal
+
+	  if(nlp_mpi_procs_per_pe == (total_mpi_procs/N_nodes))
+            offset = total_routers + total_terminals + (nlp_mpi_procs_per_pe + 1) * terminal_rem;
+          else
+            offset = total_routers + total_terminals + nlp_mpi_procs_per_pe * terminal_rem;
+
+          nlp_per_pe = nlp_mpi_procs_per_pe;
+	}
+      else
+	  printf("\n Invalid LP ID %d given for mapping ", (int)gid);
 
    if(rem > 0)
     {
@@ -89,7 +115,9 @@ tw_peid mapping( tw_lpid gid)
    return rank;
  }
 //////////////////////////////////////// Get router in the group which has a global channel to group id gid /////////////////////////////////
-tw_lpid getRouterFromGroupID(int gid, router_state * r)
+tw_lpid 
+getRouterFromGroupID(int gid, 
+		    router_state * r)
 {
   int group_begin=r->group_id*NUM_ROUTER;
   int group_end=(r->group_id*NUM_ROUTER) + NUM_ROUTER-1;
@@ -114,12 +142,191 @@ tw_lpid getRouterFromGroupID(int gid, router_state * r)
   return router_id;
 }	
 
+/////////////////////////////////////////////////////////////////MPI related functions /////////////////////////////////////////////////////
+
+void 
+mpi_init( process_state * s, 
+	       tw_lp * lp )
+{
+    tw_event *e;
+    tw_stime ts;
+    terminal_message *m;
+
+      /** Start a GENERATE event on each LP **/
+    ts = tw_rand_exponential(lp->rng, (double)MEAN_INTERVAL);
+
+    e = tw_event_new(lp->gid, ts, lp);
+
+    m = tw_event_data(e);
+    m->type = MPI_SEND;
+    tw_event_send(e);
+
+    s->message_counter = 0;
+    s->router_id = (lp->gid - total_routers - total_terminals) / NUM_TERMINALS;
+
+    s->row = getProcID(lp->gid) / NUM_ROWS;
+    s->col = getProcID(lp->gid) % NUM_COLS;
+}
+
+void 
+mpi_msg_send( process_state * s, 
+	      tw_bf * bf, 
+	      terminal_message * msg, 
+	      tw_lp * lp )
+{
+  tw_lpid dst_lp;
+  tw_stime ts;
+  tw_event *e;
+  terminal_message *m;
+  int i;
+   
+  int terminal_grp_id = ((int)lp->gid - total_routers - total_terminals)/ (NUM_TERMINALS * NUM_ROUTER);
+  int next_group_begin = ((terminal_grp_id + 1) % num_groups) * NUM_TERMINALS * NUM_ROUTER;
+  int offset = NUM_TERMINALS * NUM_ROUTER - 1;
+  bf->c4 = 1;
+ 
+  if(s->message_counter >= max_packets)
+    {
+        bf->c4 = 0;
+	return;
+    }
+
+  bf->c1 = 1;
+  bf->c3 = 1;
+  bf->c2 = 1;
+   // Set up random destination
+   switch(traffic)
+    {
+	case WORST_CASE:
+	   {
+		 bf->c3 = 0;
+
+		 dst_lp = tw_rand_integer(lp->rng, total_routers + next_group_begin, total_routers + next_group_begin + offset);
+
+		 if(dst_lp == lp->gid)
+ 		  {
+			bf->c2 = 0;
+
+			dst_lp = tw_rand_integer(lp->rng, total_routers + next_group_begin,total_routers + next_group_begin + offset);	
+		  }
+	   }
+	  break;
+
+	case UNIFORM_RANDOM:
+	   {
+		bf->c3 = 0;
+
+		dst_lp = tw_rand_integer(lp->rng, total_routers, total_routers+total_terminals-1);
+		
+		if(dst_lp == lp->gid)
+		  {
+		   bf->c2 = 0;
+
+		   dst_lp = tw_rand_integer(lp->rng, total_routers, total_routers+total_terminals-1);
+		  }
+	   }
+	 break;
+
+	case TRANSPOSE:
+	   {
+		if( s->col == s->row )
+		  {
+		   bf->c1 = 0;
+
+		   return;
+		  }
+	        dst_lp = total_routers +  (s->col * NUM_ROWS + s->row);
+	   }
+	 break;
+
+      case NEAREST_NEIGHBOR:
+	 {
+	   bf->c3 = 0;
+
+	   dst_lp = total_routers + tw_rand_integer(lp->rng, s->router_id * NUM_TERMINALS, (s->router_id + 1) * NUM_TERMINALS -1);
+
+	   if(dst_lp == lp->gid)
+	    {
+		bf->c2 = 0;
+
+		dst_lp = total_routers + tw_rand_integer(lp->rng, s->router_id * NUM_TERMINALS, (s->router_id + 1) * NUM_TERMINALS -1);
+	    }
+	}
+	break;
+
+	DEFAULT:
+	      printf("\n Undefined traffic pattern!");
+    }
+
+//  Generate packets  of PACKET_SIZE
+//  one MPI message can be much larger than the packet size so if a MPI message size is larger than the packet size, break the MPI message into packets
+  for(i = 0; i < num_packets; i++)
+  { 
+    msg->saved_available_time = s->available_time;
+
+    s->available_time = max(tw_now(lp), s->available_time);
+
+    ts = 1 + tw_rand_exponential(lp->rng, MEAN_INTERVAL/10000);
+
+    s->available_time+=ts;
+//    invoke a message at the respective terminal
+    e = tw_event_new( lp->gid - total_mpi_procs, s->available_time - tw_now(lp), lp );
+
+//issue a packet_ generate event for each network packet
+    m = tw_event_data( e );
+    m->dest_terminal_id = dst_lp;
+    m->type = T_GENERATE;
+    s->message_counter++;
+
+    m->packet_ID = packet_offset * ( lp->gid - total_routers - total_terminals ) + s->message_counter;
+    m->travel_start_time = tw_now(lp);
+
+    tw_event_send( e );
+  }
+  ts = 0.1 + tw_rand_exponential( lp->rng, MEAN_INTERVAL );
+  e = tw_event_new( lp->gid, ts, lp );
+  m = tw_event_data( e );
+  m->type = MPI_SEND;
+  tw_event_send( e );
+}
+
+void 
+mpi_msg_recv( process_state * s, 
+	     tw_bf * bf, 
+	     terminal_message * msg, 
+	     tw_lp * lp )
+{
+
+  int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
+}
+
+void 
+mpi_event( process_state * s, 
+	      tw_bf * bf, 
+	      terminal_message * msg, 
+              tw_lp * lp )
+{
+  switch(msg->type)
+   {
+    case MPI_SEND:
+		mpi_msg_send(s, bf, msg, lp);
+    break;
+
+    case MPI_RECV:
+		mpi_msg_recv(s, bf, msg, lp);
+    break;
+
+    DEFAULT:
+    		printf("\n Wrong argument for MPI process LP");
+   }
+}
+/////////////////////////////////// Packet generate, receive functions ////////////////////////////////////////////
 /////////////////////////////////////// Credit buffer ////////////////////////////////////////////////////////////////////////////////////////
 //Whenever a packet is sent and a buffer slot becomes available, a credit is sent and a waiting packet is scheduled 
 void router_credit_send(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp, int output_chan)
 {
   tw_event * buf_e;
-
+  tw_stime ts;
   terminal_message * buf_msg;
 
   int dest, credit_delay;
@@ -131,236 +338,163 @@ void router_credit_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
   if(msg->last_hop == TERMINAL)
   {
    dest = msg->src_terminal_id;
+   //determine the time in ns to transfer the credit
+   credit_delay = (1 / NODE_BANDWIDTH) * CREDIT_SIZE;
   }
    else if(msg->last_hop == GLOBAL)
    {
      dest = msg->intm_lp_id;
+     credit_delay = (1 / GLOBAL_BANDWIDTH) * CREDIT_SIZE;
    }
     else if(msg->last_hop == LOCAL)
      {
         dest = msg->intm_lp_id;
+     	credit_delay = (1/LOCAL_BANDWIDTH) * CREDIT_SIZE;
      }
     else
       printf("\n Invalid message type");
 
-   int output_port = output_chan/NUM_VC;
+   //int output_port = output_chan/NUM_VC;
+ 
+   // Assume it takes 0.1 ns of serialization latency for processing the credits in the queue
+//   s->next_credit_available_time[output_port] = max(tw_now(lp), s->next_credit_available_time[output_port]);
+//   s->next_credit_available_time[output_port] += 0.1;
 
-   s->next_credit_available_time[output_port] = max(tw_now(lp), s->next_credit_available_time[output_port]);
-   s->next_credit_available_time[output_port] += 2.0;
-
-   buf_e = tw_event_new(dest, s->next_credit_available_time[output_port] - tw_now(lp) , lp);
+   //buf_e = tw_event_new(dest, s->next_credit_available_time[output_port] + credit_delay - tw_now(lp) , lp);
+//  buf_e = tw_event_new(dest, credit_delay , lp);
+  ts = credit_delay + tw_rand_exponential(lp->rng, (double)credit_delay/10000);
+  buf_e = tw_event_new(dest, ts, lp);
 
   buf_msg = tw_event_data(buf_e);
   buf_msg->vc_index = msg->saved_vc;
   buf_msg->type=BUFFER;
+  buf_msg->last_hop = msg->last_hop;
   buf_msg->packet_ID=msg->packet_ID;
 
   tw_event_send(buf_e);
 }
-/////////////////////////////////// Packet generate, receive functions ////////////////////////////////////////////
+
 void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
 {
   tw_lpid dst_lp;
   tw_stime ts;
   tw_event *e;
   terminal_message *m;
+  int i;
 
-  bf->c3 = 1;
-  // Before generating a packet, check if the input queue is available
-   int chan=-1, i;
-   for(i=0; i<NUM_VC; i++)
-    {
-     if(s->output_vc_state[i] == VC_IDLE)
-      {
-       chan=i;
-       break;
-      }
-    }
-
-   int terminal_grp_id = ((int)lp->gid - total_routers)/ (NUM_TERMINALS * NUM_ROUTER);
-   int next_group_begin = ((terminal_grp_id + 1) % num_groups) * NUM_TERMINALS * NUM_ROUTER;
-   int offset = NUM_TERMINALS * NUM_ROUTER - 1;
-
-   ts = 0.01 + tw_rand_exponential(lp->rng, MEAN_INTERVAL/10000);
-
-   msg->travel_start_time = tw_now(lp);
-
-   if(chan != -1) // If the input queue is available
-   {
-   // Send the packet out
-   s->output_vc_state[chan] = VC_ACTIVE;
-
-   e = tw_event_new(lp->gid, ts, lp);
-  
-   m = tw_event_data(e);
-   m->type = T_SEND;
-   m->wait_type = -1;
-   m->saved_vc=chan;
-   msg->saved_vc = chan;
-   m->src_terminal_id=(int)lp->gid;
-
-   // Set up random destination
-   switch(traffic)
-    {
-	case WORST_CASE:
-	   {
-		 dst_lp = tw_rand_integer(lp->rng, total_routers + next_group_begin, total_routers + next_group_begin + offset);
-	   }
-	  break;
-
-	case UNIFORM_RANDOM:
-	   {
-		dst_lp = tw_rand_integer(lp->rng, total_routers, total_routers+total_terminals-1);
-		
-		while(dst_lp == lp->gid)
-		   dst_lp = tw_rand_integer(lp->rng, total_routers, total_routers+total_terminals-1);
-	   }
-	 break;
-
-	case TRANSPOSE:
-	   {
-		if( s->col == s->row )
-		   return;
-	        dst_lp = total_routers +  (s->col * NUM_ROWS + s->row);
-		//if(dst_lp > total_routers+total_terminals+1)
-		//   printf("\n WRONG DESTINATION ID %d", dst_lp);
-		//printf("\n LP %lld row %d col %d sending to %lld ", lp->gid, s->row, s->col, dst_lp);
-	   }
-	 break;
-
-      case NEAREST_NEIGHBOR:
-	 {
-	   dst_lp = total_routers + tw_rand_integer(lp->rng, s->router_id * NUM_TERMINALS, (s->router_id + 1) * NUM_TERMINALS -1) ;
-
-	   while(dst_lp == lp->gid)
-		dst_lp = total_routers + s->router_id * NUM_TERMINALS + (( lp->gid % NUM_TERMINALS ) + 1) % NUM_TERMINALS;
-	}
-	break;
-
-	DEFAULT:
-	      printf("\n Undefined traffic pattern!");
-    }
-
-   // record start time
-   m->travel_start_time = msg->travel_start_time;
-   m->my_N_hop = 0;
-   m->dest_terminal_id=dst_lp;
-   m->packet_ID = msg->packet_ID;
-   m->intm_group_id = -1;
-
-   tw_event_send(e);
-
-
-  int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
-  N_generated_storage[index]++;
-
-  // schedule next GENERATE event
-  ts = tw_rand_exponential(lp->rng, (double)MEAN_INTERVAL);
-
-  e = tw_event_new(lp->gid, ts, lp);
-  
-  m = tw_event_data(e);
-  m->type = T_GENERATE;
-  m->packet_ID = lp->gid + total_terminals*s->packet_counter;
-
-#if DEBUG
-  if(m->packet_ID == TRACK)
-    printf("\n (%lf) [Terminal %d]: Packet %lld generated Destination terminal %d ", tw_now(lp), (int)lp->gid, m->packet_ID, (int)dst_lp);
-#endif
-  s->packet_counter++;
-  m->travel_start_time = msg->travel_start_time;
-  tw_event_send(e);
-  }
- else
+  ts = 0.001 + tw_rand_exponential(lp->rng, MEAN_INTERVAL/10000);
+  for(i = 0; i < num_chunks; i++)
   {
-    //schedule a generate event after a certain delay
-     bf->c3 = 0;
+	  // Before generating a packet, check if the input queue is available
+	int chan=-1, j;
+	for(j=0; j<NUM_VC; j++)
+	 {
+	     if(s->vc_occupancy[j] < TERMINAL_VC_SIZE * num_chunks)
+	      {
+	       chan=j;
+	       break;
+	      }
+         }
 
-     e = tw_event_new(lp->gid, ts, lp);
+       e = tw_event_new(lp->gid, i + ts, lp);
+       m = tw_event_data(e);
+       m->dest_terminal_id = msg->dest_terminal_id;
+       m->packet_ID = msg->packet_ID;
+       m->src_terminal_id=(int)lp->gid;
+       m->travel_start_time = msg->travel_start_time;
+       m->my_N_hop = 0;
+       m->dest_terminal_id=msg->dest_terminal_id;
+       m->packet_ID = msg->packet_ID;
+       m->intm_group_id = -1;
+       // 16-05
+       m->saved_vc=0;
+       m->chunk_id = i;
+       m->output_chan = -1;
+       m->wait_loc = -1;
+       msg->saved_vc = 0;
 
-     m = tw_event_data(e);
-     m->type = WAIT;
-
-     m->travel_start_time = msg->travel_start_time;
-     m->wait_type = T_GENERATE;
-     tw_event_send(e);
-  }
+       if(chan != -1) // If the input queue is available
+   	{
+	    // Send the packet out
+	     m->type = T_SEND;
+	     m->wait_type = -1;
+	     // record start time
+ 	     tw_event_send(e);
+        }
+      else
+         {
+	    //schedule a generate event after a certain delay
+	    //
+	   m->type = WAIT;
+           m->wait_type = T_SEND;
+	   tw_event_send(e);
+        } //else
+  } // for
 }
 
 void packet_send(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
 {
+
+//  Now divide the packet into chunks of 32B each
+  tw_stime ts;
+  tw_event *e;
+  terminal_message *m;
+  /* Route the packet to its source router */ 
+
+   int vc=msg->saved_vc, i=0;
+   bf->c3 = 1;
+
+   if(msg->chunk_id == num_chunks - 1) 
+    {
+       bf->c3 = 0;
+       int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
+       N_generated_storage[index]++;
+    }
+
+//  Each packet is broken into chunks and then sent over the channel
+   msg->saved_available_time = s->terminal_available_time;
+   
+   head_delay = (1/NODE_BANDWIDTH) * CHUNK_SIZE;
+   ts = head_delay + tw_rand_exponential(lp->rng, (double)head_delay/10000);
+   
+   s->terminal_available_time = max(s->terminal_available_time, tw_now(lp));
+   s->terminal_available_time += ts;
+
+//   e = tw_event_new(s->router_id, s->terminal_available_time + head_delay - tw_now(lp), lp);
+   e = tw_event_new(s->router_id, s->terminal_available_time - tw_now(lp), lp);
+
 #if DEBUG
 if( msg->packet_ID == TRACK )
   {
-    printf("\n (%lf) [Terminal %d] {Node %d} Packet %lld being sent to source router %d Output VC : %d \n", tw_now(lp), (int)lp->gid, (int)g_tw_mynode, msg->packet_ID,  (int)s->router_id, (int)msg->saved_vc);
+    printf("\n (%lf) [Terminal %d] {Node %d} Packet %lld chunk %d being sent to source router %d Output VC : %d after %lf \n", tw_now(lp), (int)lp->gid, (int)g_tw_mynode, msg->packet_ID, msg->chunk_id, (int)s->router_id, (int)msg->saved_vc, s->terminal_available_time - tw_now(lp));
   }
 #endif
+   m = tw_event_data(e);
+   m->type = R_ARRIVE;
 
-  tw_stime ts;
-  tw_event *e, *buf_e;
-  terminal_message *m;
-  terminal_message * buf_msg;
-  /* Route the packet to its source router */ 
+	  // Carry on the message info
+   m->dest_terminal_id = msg->dest_terminal_id;
+   m->src_terminal_id = msg->src_terminal_id;
+   m->packet_ID = msg->packet_ID;
+   m->chunk_id = msg->chunk_id;
+   m->travel_start_time = msg->travel_start_time;
+   m->my_N_hop = msg->my_N_hop;
+   m->saved_vc = vc;
+   m->intm_group_id = msg->intm_group_id;
+   m->last_hop = TERMINAL;
+   m->input_chan = -1;
+   m->wait_type = msg->wait_type;
+//  Each chunk is 32B and the VC occupancy is in chunks to enable efficient flow control
 
-  int vc=msg->saved_vc;
-  s->vc_occupancy[vc]++;
+   tw_event_send(e);
+   
+   s->packet_counter++;
+   s->vc_occupancy[vc]++;
 
-#if DEBUG
- if( msg->packet_ID == TRACK )
-  {
-    printf("\n (%lf) [Terminal %d] VC %d buffer status %d ", tw_now(lp), (int)lp->gid, (int)msg->packet_ID, vc, s->vc_occupancy[vc]);
-  }
-#endif
-
-  msg->saved_available_time = s->terminal_available_time;
-  s->terminal_available_time = max(s->terminal_available_time, tw_now(lp));
-
-  head_delay = (1/NODE_BANDWIDTH * HEAD_SIZE);
-  ts = tw_rand_exponential(lp->rng, (double)TERMINAL_DELAY/1000) + head_delay;   
-
-  e = tw_event_new(s->router_id, ts, lp);
-
-  m = tw_event_data(e);
-  m->type = R_ARRIVE;
-
-    // Carry on the message info
-  m->dest_terminal_id = msg->dest_terminal_id;
-  m->src_terminal_id = msg->src_terminal_id;
-  m->packet_ID = msg->packet_ID;
-  m->travel_start_time = msg->travel_start_time;
-  m->my_N_hop = msg->my_N_hop;
-  m->saved_vc = msg->saved_vc;
-  m->intm_group_id = msg->intm_group_id;
-  m->last_hop = TERMINAL;
-  m->input_chan = -1;
-  m->wait_type = msg->wait_type;
- 
-  s->output_vc_state[vc] = VC_IDLE;
-
-  if(s->vc_occupancy[vc] == TERMINAL_VC_SIZE)
-  {
-    s->output_vc_state[vc] = VC_CREDIT;
-  }
-
-  tw_event_send(e);
-  
-  /*ts = LOCAL_DELAY + tw_rand_exponential(lp->rng, (double)LOCAL_DELAY/100);
-
-  buf_e = tw_event_new(lp->gid, ts, lp);
-  buf_msg = tw_event_data(buf_e);
-  buf_msg->vc_index = msg->saved_vc;
-  buf_msg->type=BUFFER;
-  buf_msg->packet_ID=msg->packet_ID;
-
-  tw_event_send(buf_e);*/
-  // Update the downstream router's buffer
-  #if DEBUG
-  if( msg->packet_ID == TRACK )
-    {
-       printf("(%lf) [Terminal %d] packet %lld sending credit to %d channel %d \n",
-              tw_now(lp), (int)lp->gid, msg->packet_ID, msg->intm_lp_id, msg->saved_vc);
-    }
-  #endif
+   if(s->vc_occupancy[vc] >= (TERMINAL_VC_SIZE * num_chunks))
+   {
+      s->output_vc_state[vc] = VC_CREDIT;
+   }
 }
 
 void packet_arrive(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
@@ -381,93 +515,112 @@ if( msg->packet_ID == TRACK )
   // Packet arrives and accumulate # queued
   // Find a queue with an empty buffer slot
 
-  int body_delay;
-  
-  switch( msg->route )
+  tw_event * e, * buf_e;
+  terminal_message * m, * buf_msg;
+//  printf("\n Message chunk arrived, ID: %d ", msg->chunk_id);
+
+  if(msg->chunk_id == num_chunks-1)
   {
-  case MINIMAL:
+    e = tw_event_new(lp->gid, MEAN_PROCESS, lp);
+    m = tw_event_data( e );
+    m->travel_start_time = msg->travel_start_time;
+    m->type = FINISH;
+    m->packet_ID = msg->packet_ID;
+    m->my_N_hop = msg->my_N_hop;
+    tw_event_send(e);
+  }
 
-    body_delay = 2 * ( 1 / NODE_BANDWIDTH * PACKET_SIZE ) + 2 * (1 / LOCAL_BANDWIDTH * PACKET_SIZE) + (1 / GLOBAL_BANDWIDTH * PACKET_SIZE);    
-
-  break;
-   
-  case NON_MINIMAL:
-
-    body_delay = 2 * ( 1 / NODE_BANDWIDTH * PACKET_SIZE ) + 4 * (1 / LOCAL_BANDWIDTH * PACKET_SIZE) + 2 * (1 / GLOBAL_BANDWIDTH * PACKET_SIZE);
-
-  break;
-
-  DEFAULT:
-	printf("\n Invalid message route!");
- }
-
-  total_hops += msg->my_N_hop;
-
-  tw_event * buf_e, * e;
-  terminal_message * buf_msg, * m;
-   
-  buf_e = tw_event_new(msg->intm_lp_id, 0.1, lp);
+  int credit_delay = (1/NODE_BANDWIDTH) * CREDIT_SIZE;
+  buf_e = tw_event_new(msg->intm_lp_id, credit_delay, lp);
   buf_msg = tw_event_data(buf_e);
   buf_msg->vc_index = msg->saved_vc;
   buf_msg->type=BUFFER;
   buf_msg->packet_ID=msg->packet_ID;
+  buf_msg->last_hop = TERMINAL;
 
   tw_event_send(buf_e);
-
-  e = tw_event_new(lp->gid, MEAN_PROCESS + body_delay, lp);
-  m = tw_event_data( e );
-  m->travel_start_time = msg->travel_start_time;
-  m->type = FINISH;
-  m->packet_ID = msg->packet_ID;
-  tw_event_send(e);
 }
 
 void packet_finish(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
 {
   N_finished++;
+  bf->c3 = 1;
 
   int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
   N_finished_storage[index]++;
   total_time += (tw_now(lp) - msg->travel_start_time);
+  total_hops += msg->my_N_hop;
 
   if (max_latency < (tw_now(lp) - msg->travel_start_time) )
    {
+	bf->c3 = 0;	
+	msg->saved_available_time = max_latency;
 	max_latency=tw_now(lp) - msg->travel_start_time;
-	max_packet = msg->packet_ID;
+//	max_packet = msg->packet_ID;
    }
 }
+
 /////////////////// WAiting packets linked list /////////////////////////////
+void 
+copyData(terminal_message * from, terminal_message * to)
+{
+   to->travel_start_time = from->travel_start_time;
+   to->packet_ID = from->packet_ID;
+   to->dest_terminal_id = from->dest_terminal_id;
+   to->src_terminal_id = from->src_terminal_id;
+   to->my_N_hop = from->my_N_hop;
+   to->intm_lp_id = from->intm_lp_id;
+   to->old_vc = from->old_vc;
+   to->saved_vc = from->saved_vc;
+   to->last_hop = from->last_hop;
+   to->vc_index = from->vc_index;
+   to->input_chan = from->input_chan;
+   to->output_chan = from->output_chan;
+   to->saved_available_time = from->saved_available_time;
+   to->saved_credit_time = from->saved_credit_time;
+   to->intm_group_id = from->intm_group_id;
+   to->wait_type = -1;
+   to->wait_loc = from->wait_loc;
+   to->chunk_id = from->chunk_id; 
+   to->route = from->route;
+}
+void
+waiting_terminal_packet_free(terminal_state * s, int loc)
+{
+  int i, max_count = s->wait_count - 1;
+  
+  for(i = loc; i < max_count; i++) {
+      s->waiting_list[i].chan = s->waiting_list[i + 1].chan;
+      s->waiting_list[i].packet = s->waiting_list[i + 1].packet;
+  }
+
+  s->waiting_list[max_count].packet = NULL;
+  // 16-05
+  s->waiting_list[max_count].chan = -1;
+
+  s->wait_count--;
+}
+
 void
 update_terminal_waiting_list( terminal_state * s,
+			tw_bf * bf,
                         terminal_message * msg,
                         tw_lp * lp )
 {
-   waiting_list * tmp = malloc(sizeof(waiting_list));
-   waiting_list * tmp2 = malloc(sizeof(waiting_list));
+  bf->c3 = 0;
+  int loc = s->wait_count;
 
-   tmp->packet = malloc(sizeof(terminal_message));
-   tmp->packet = msg;
-   tmp->next = NULL;
+  if(loc >= TERMINAL_WAITING_PACK_COUNT)
+    {
+	bf->c3 = 1;
+ 	//printf(" Terminal reached maximum count of linked list %d ", s->wait_count);
+	// Do not insert packet in the waiting queue in the unusual case where the waiting queue count exceeds
+	return;
+    }
 
-
-   if(msg->wait_type != T_GENERATE)
-   printf("\n Invalid wait type %d ", msg->wait_type);
-
-   if( s->root == NULL )
-   {
-      // Insert at the root
-      s->root = tmp;
-   }
-  else
-   {
-     tmp2 = s->root;
-     // Traverse down to the end of the list
-     while( tmp2->next != NULL )
-      tmp2 = tmp2->next;
-
-     // Append at the end of the list
-      tmp2->next = tmp;
-   }
+  s->waiting_list[loc].chan = msg->saved_vc;
+  s->waiting_list[loc].packet = msg;
+  s->wait_count++;
 }
 
 /*Once a credit arrives at the node, this method picks a waiting packet in the injection queue and schedules it */
@@ -477,43 +630,51 @@ schedule_terminal_waiting_msg( terminal_state * s,
                            terminal_message * msg,
                            tw_lp * lp )
 {
-  if( s->root == NULL )
+  bf->c3 = 1;
+  waiting_packet * current = s->head;
+
+  if( s->wait_count <= 0 || current == NULL)
+   {
     return;
+   }
 
-  waiting_list * current = s->root;
-  waiting_list * head = s->root;
-
-  tw_event *e;
-  tw_stime ts;
+  int loc = 0;
+  tw_event * e_h;
   terminal_message * m;
 
   if( current != NULL )
   {
+       bf->c3 = 0;
       //&& s->buffer[ current->dir + ( current->dim * 2 ) ][ 0 ] >= ( 2 * msg->packet_size )/TOKEN_SIZE )
-        e = tw_event_new( lp->gid, 0.01, lp );
-	m = tw_event_data(e);
-	m->type = T_GENERATE;
-	m->travel_start_time = current->packet->travel_start_time;
-	tw_event_send( e );
+        e_h = tw_event_new( lp->gid, 0.001, lp );
+	m = tw_event_data(e_h);
 
-        s->root = head->next;
-        free( current );
+	copyData(current->packet, m);
+	copyData(current->packet, msg);
+	msg->wait_loc = loc;
+
+	m->type = T_SEND;
+	tw_event_send( e_h );
+	 
+	waiting_terminal_packet_free(s, loc);
   }
 }
 
 ////////////////////////////////////////////////// Terminal related functions ///////////////////////////////////////
 
-void terminal_setup(terminal_state * s, tw_lp * lp)
+void 
+terminal_init( terminal_state * s, 
+	       tw_lp * lp )
 {
-    int i, j;
+    int i;
 
     s->terminal_id=((int)lp->gid);  
  
     // Assign the global router ID
     s->router_id=getRouterID(lp->gid);
+    s->terminal_available_time = 0.0;
 
     //printf("\n (%lf) [Terminal %d] assigned router id %d ", tw_now(lp), (int)lp->gid, (int)s->router_id);
- 
     s->packet_counter = 0;
 
    for( i = 0; i < NUM_VC; i++ )
@@ -521,36 +682,28 @@ void terminal_setup(terminal_state * s, tw_lp * lp)
       s->vc_occupancy[i]=0;
       s->output_vc_state[i]=VC_IDLE;
     }
+   s->waiting_list = tw_calloc(TW_LOC, "waiting list", sizeof(struct waiting_packet), TERMINAL_WAITING_PACK_COUNT);
 
-    s->row =  getTerminalID(lp->gid) / NUM_ROWS;
-    s->col = getTerminalID(lp->gid) % NUM_COLS;
+   int j;
+   for (j = 0; j < TERMINAL_WAITING_PACK_COUNT - 1; j++) {
+      s->waiting_list[j].next = &s->waiting_list[j + 1];
+      // 16-05
+      s->waiting_list[j].chan = -1;
+      s->waiting_list[j].packet = NULL;
+    }
+
+   s->waiting_list[j].next = NULL;
+   s->head = &s->waiting_list[0];
+   // 16/05
+   s->wait_count = 0;
 }
 
-void terminal_init(terminal_state * s, tw_lp * lp)
-{
-    tw_event *e;
-   
-    tw_stime ts;
-    terminal_message *m;
-   
-    terminal_setup(s, lp);
 
-  /** Start a GENERATE event on each LP **/
-    ts = MEAN_INTERVAL + tw_rand_exponential(lp->rng, (double)MEAN_INTERVAL/1000);
-
-    e = tw_event_new(lp->gid, ts, lp);
-   
-    m = tw_event_data(e);
-    m->type = T_GENERATE;
-    m->wait_type = -1;
-    m->packet_ID = lp->gid + total_terminals*s->packet_counter;
-    
-    s->packet_counter++;
-
-    tw_event_send(e);
-}
-
-void terminal_buf_update(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+void 
+terminal_buf_update(terminal_state * s, 
+		    tw_bf * bf, 
+		    terminal_message * msg, 
+		    tw_lp * lp)
 {
   // Update the buffer space associated with this router LP 
     int msg_indx = msg->vc_index;
@@ -563,33 +716,36 @@ void terminal_buf_update(terminal_state * s, tw_bf * bf, terminal_message * msg,
      schedule_terminal_waiting_msg( s, bf, msg, lp );
 }
 
-void terminal_event(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+void 
+terminal_event( terminal_state * s, 
+		tw_bf * bf, 
+		terminal_message * msg, 
+		tw_lp * lp )
 {
   switch(msg->type)
     {
     case T_GENERATE:
-      packet_generate(s,bf,msg,lp);
-      
-      break;
+       packet_generate(s,bf,msg,lp);
+    break;
     
     case T_ARRIVE:
-      packet_arrive(s,bf,msg,lp);
-      break;
+        packet_arrive(s,bf,msg,lp);
+    break;
     
     case T_SEND:
       packet_send(s,bf,msg,lp);
-      break;
+    break;
     
     case BUFFER:
-     terminal_buf_update(s, bf, msg, lp);
+       terminal_buf_update(s, bf, msg, lp);
      break;
 
     case WAIT:
-     update_terminal_waiting_list( s, msg, lp );
+      update_terminal_waiting_list( s, bf, msg, lp );
     break;
 
     case FINISH:
-	packet_finish(s, bf, msg, lp);
+      packet_finish(s, bf, msg, lp);
     break;
 
     default:
@@ -597,7 +753,9 @@ void terminal_event(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_l
     }
 }
 
-void final(terminal_state * s, tw_lp * lp)
+void 
+final( terminal_state * s, 
+      tw_lp * lp )
 {
 
 }
@@ -638,7 +796,12 @@ int get_input_chan(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp *
 
   return input_chan;
 }
-void router_reschedule_event(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+
+void 
+router_reschedule_event(router_state * s, 
+			tw_bf * bf, 
+			terminal_message * msg, 
+			tw_lp * lp)
 {
  // Check again after some time
   terminal_message * m;
@@ -666,7 +829,12 @@ void router_reschedule_event(router_state * s, tw_bf * bf, terminal_message * ms
   tw_event_send(e);
 }
 
-tw_lpid get_next_stop(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp, int path)
+tw_lpid 
+get_next_stop(router_state * s, 
+		      tw_bf * bf, 
+		      terminal_message * msg, 
+		      tw_lp * lp, 
+		      int path)
 {
    int dest_lp;
    int i;
@@ -728,7 +896,12 @@ tw_lpid get_next_stop(router_state * s, tw_bf * bf, terminal_message * msg, tw_l
    return dest_lp;
 }
 
-int get_output_port(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp, int next_stop)
+int 
+get_output_port( router_state * s, 
+		tw_bf * bf, 
+		terminal_message * msg, 
+		tw_lp * lp, 
+		int next_stop )
 {
   int output_port = -1, i;
 
@@ -755,7 +928,11 @@ int get_output_port(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp 
     }
     return output_port;
 }
-void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+
+void 
+router_packet_send( router_state * s, 
+		    tw_bf * bf, 
+		     terminal_message * msg, tw_lp * lp)
 {
   tw_stime ts;
   tw_event *e;
@@ -768,8 +945,11 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
 
   bf->c1 = 0;
   bf->c4 = 0;
+  bf->c3 = 1;
+  bf->c2 = 1;
 
- if(msg->last_hop == TERMINAL && ROUTING == ADAPTIVE)
+//  Comment out the adaptive routing for now 
+/* if(msg->last_hop == TERMINAL && ROUTING == ADAPTIVE)
   {
   // decide which routing to take
     int minimal_next_stop=get_next_stop(s, bf, msg, lp, MINIMAL);
@@ -810,36 +990,34 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
 	 }
   }
  else
-  {
+  {*/
    next_stop = get_next_stop(s, bf, msg, lp, path);
    output_port = get_output_port(s, bf, msg, lp, next_stop); 
-  }
+ // }
    output_chan = output_port * NUM_VC;
 
    // Even numbered channels for minimal routing
    // Odd numbered channels for nonminimal routing
    // Separate the queue occupancy into minimal and non minimal virtual channels if the min & non min
    // paths start at the same output port
-   if((ROUTING == ADAPTIVE) && (minimal_out_port == nonmin_out_port))
+   /* if((ROUTING == ADAPTIVE) && (minimal_out_port == nonmin_out_port))
    {
 	if(path == MINIMAL)
 	  output_chan = output_chan + 1;
 	else
 	  if(path == NON_MINIMAL)
 	    output_chan = output_chan + 2;
-   }
+   }*/
 
    int i, global=0;
-   int delay= LOCAL_DELAY;
+   //int delay= LOCAL_DELAY;
 
-   bf->c3 = 1;
+//   bf->c3 = 1;
 
    // Allocate output Virtual Channel
   if(output_port >= NUM_ROUTER && output_port < NUM_ROUTER + GLOBAL_CHANNELS)
   {
-	  if( msg->packet_ID == TRACK)
-		  printf("\n (%lf) [Router %d] Packet %lld next hop global", tw_now(lp), (int)lp->gid, msg->packet_ID);
-	 delay = GLOBAL_DELAY;
+	 //delay = GLOBAL_DELAY;
 	 bandwidth = GLOBAL_BANDWIDTH;
 	 global = 1;
   } 
@@ -850,62 +1028,50 @@ void router_packet_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
   // If the output virtual channel is not available, then hold the input virtual channel too
    if(s->output_vc_state[output_chan] != VC_IDLE)
     {
-       if(ROUTING != ADAPTIVE)
-       {
-       // Re-schedule the event, keep holding input virtual channel
-        output_chan = output_chan + 1;
-       }
-	if(s->output_vc_state[output_chan] != VC_IDLE)
-          {
-            bf->c3 = 0;
+       bf->c3 = 0;
  
-	    msg->wait_type = R_SEND;
-	    msg->output_chan = output_chan;
-  	    router_reschedule_event(s, bf, msg, lp);
+       msg->wait_type = R_SEND;
+       msg->vc_index = output_chan;
+       router_reschedule_event(s, bf, msg, lp);
   
-            return;
-	   }
+       return;
     }
 
 #if DEBUG
-if( msg->packet_ID == TRACK && next_stop != msg->dest_terminal_id)
+/*if( msg->packet_ID == TRACK && next_stop != msg->dest_terminal_id)
   {
    printf("\n (%lf) [Router %d] Packet %lld being sent to intermediate group router %d Final destination router %d Output Channel Index %d Saved vc %d msg_intm_id %d \n", 
               tw_now(lp), (int)lp->gid, msg->packet_ID, next_stop, 
 	      getRouterID(msg->dest_terminal_id), output_chan, msg->saved_vc, msg->intm_group_id);
-  }
+  }*/
 #endif
   //s->input_vc_state[input_chan] = VC_IDLE;
   //schedule_router_waiting_msg(s, bf, msg, lp, input_chan);
 
  // If source router doesn't have global channel and buffer space is available, then assign to appropriate intra-group virtual channel 
   msg->saved_available_time = s->next_output_available_time[output_port];
-  s->output_vc_state[output_chan] = VC_ACTIVE;
-  ts = tw_rand_exponential(lp->rng, (double)delay/1000) + (1/bandwidth * HEAD_SIZE);
-//  s->next_output_available_time[output_port] = max(s->next_output_available_time[output_port], tw_now(lp));
-//  s->next_output_available_time[output_port] += 0.5;
+  //s->output_vc_state[output_chan] = VC_ACTIVE;
+  ts = ((1/bandwidth) * CHUNK_SIZE) + tw_rand_exponential(lp->rng, (double)CHUNK_SIZE/10000);
 
-//  e = tw_event_new(next_stop, s->next_output_available_time[output_port] + ts - tw_now(lp), lp);
-
-  e = tw_event_new(next_stop, ts, lp);
+  s->next_output_available_time[output_port] = max(s->next_output_available_time[output_port], tw_now(lp));
+  s->next_output_available_time[output_port] += ROUTER_DELAY;
+  e = tw_event_new(next_stop, s->next_output_available_time[output_port] + ts - tw_now(lp), lp);
 
   m = tw_event_data(e);
 
   if(global)
-   {
     m->last_hop=GLOBAL;
-   }
   else
-   {
     m->last_hop = LOCAL;
-   }
 
   m->saved_vc = output_chan;
   msg->old_vc = output_chan;
   m->intm_lp_id = lp->gid;
-  m->route = path;
+//  Commented out 16-05
+  //m->route = path;
 
-  s->output_vc_state[output_chan] = VC_IDLE;
+//  Commented out 16-05
+  //s->output_vc_state[output_chan] = VC_IDLE;
   s->vc_occupancy[output_chan]++;
 
   router_credit_send(s, bf, msg, lp, output_chan);
@@ -918,13 +1084,14 @@ if( msg->packet_ID == TRACK && next_stop != msg->dest_terminal_id)
   m->my_N_hop = msg->my_N_hop;
   m->intm_group_id = msg->intm_group_id;
   m->wait_type = -1;
+  m->chunk_id = msg->chunk_id;
 
 
   if(next_stop == msg->dest_terminal_id)
   {
     m->type = T_ARRIVE;
 
-    if(s->vc_occupancy[output_chan] == TERMINAL_VC_SIZE)
+    if(s->vc_occupancy[output_chan] == TERMINAL_VC_SIZE * num_chunks)
       s->output_vc_state[output_chan] = VC_CREDIT;
   }
   else
@@ -933,96 +1100,53 @@ if( msg->packet_ID == TRACK && next_stop != msg->dest_terminal_id)
 
    if( global )
    {
-     if(s->vc_occupancy[output_chan] == GLOBAL_VC_SIZE)
+     if(s->vc_occupancy[output_chan] == GLOBAL_VC_SIZE * num_chunks )
        s->output_vc_state[output_chan] = VC_CREDIT;
    }
-   else
-   {
-     if( s->vc_occupancy[output_chan] == LOCAL_VC_SIZE )
+  else
+    {
+     if( s->vc_occupancy[output_chan] == LOCAL_VC_SIZE * num_chunks )
 	s->output_vc_state[output_chan] = VC_CREDIT;
-   }
+    }
   }
   tw_event_send(e);
 }
 
 // Packet arrives at the router
-void router_packet_receive(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+void 
+router_packet_receive( router_state * s, 
+			tw_bf * bf, 
+			terminal_message * msg, 
+			tw_lp * lp )
 {
   // STEP 1: Allocate an input virtual channel 
-  int input_port = get_input_chan(s, bf, msg, lp);
-  int input_chan = NUM_VC * input_port;
-  bf->c3 = 1;
-  int i, free = 0;
-
-  /*for(i=input_chan; i < input_chan + NUM_VC; i++)
-  {
-     if(s->input_vc_state[i] == VC_IDLE)
-     {
-	     free = 1;
-	     input_chan = i;
-	     break;
-     }
-  }
-
-  if(!free)
-   {
-       // Re-schedule the event
-     bf->c3 = 0;
-     msg->wait_type = R_ARRIVE;
-     msg->input_chan = input_chan;
-     router_reschedule_event(s, bf, msg, lp);
-     return;
-   }*/
-
-  msg->my_N_hop++;
+   msg->my_N_hop++;
 
   // STEP 2: Route Computation
-//  s->input_vc_state[input_chan]=VC_ALLOC;
+   tw_event *e, * buf_e;
+   terminal_message *m;
+   tw_stime ts;
+   ts = 1 + tw_rand_exponential(lp->rng, (double)MEAN_INTERVAL/10000);
 
-  //tw_stime ts = 0.1 + tw_rand_exponential(lp->rng, (double)0.1);
-
-  tw_event *e, * buf_e;
-  terminal_message *m;
-
-  msg->saved_available_time = s->next_input_available_time[input_port];
-
-  s->next_input_available_time[input_port] = max(s->next_input_available_time[input_port], tw_now(lp));
-  s->next_input_available_time[input_port] += 2.0;
-
-  head_delay = ( 1 / LOCAL_BANDWIDTH ) * HEAD_SIZE;
-  e = tw_event_new(lp->gid, s->next_input_available_time[input_port] + head_delay - tw_now(lp), lp);
-//   s->next_available_time = max(tw_now(lp), s->next_available_time);
-//   s->next_available_time += 2.0;
-
-//   e = tw_event_new(lp->gid, s->next_available_time + head_delay - tw_now(lp), lp);
+   e = tw_event_new(lp->gid, ts, lp);
  
-// s->next_input_available_time[input_port] += 1.0;
-  //e = tw_event_new(lp->gid, 0.5, lp);
+   m = tw_event_data(e);
+   m->saved_vc = msg->saved_vc;
+   m->intm_lp_id = msg->intm_lp_id;
 
- if( msg->packet_ID == TRACK )
- {
-  printf(" \n (%lf) [Router %d] packet %lld arrived at intermediate router input chan %d state: %d scheduled after \n",
-          tw_now(lp), (int)lp->gid, msg->packet_ID, input_chan, s->input_vc_state[input_chan], s->next_input_available_time[input_port] - tw_now(lp));
- }
-  m = tw_event_data(e);
-  msg->input_chan = input_chan;
-  m->saved_vc = msg->saved_vc;
-  m->intm_lp_id = msg->intm_lp_id;
+  // Carry on the message information
+   m->dest_terminal_id = msg->dest_terminal_id;
+   m->src_terminal_id = msg->src_terminal_id;
+   m->packet_ID = msg->packet_ID;
+   m->chunk_id = msg->chunk_id;
+   m->travel_start_time = msg->travel_start_time;
+   m->my_N_hop = msg->my_N_hop;
+   m->last_hop = msg->last_hop;
+   m->intm_group_id = msg->intm_group_id;
+   m->type = R_SEND;
+   m->wait_type = -1;
 
- // Carry on the message information
-  m->dest_terminal_id = msg->dest_terminal_id;
-  m->src_terminal_id = msg->src_terminal_id;
-  m->packet_ID = msg->packet_ID;
-  m->travel_start_time = msg->travel_start_time;
-  m->my_N_hop = msg->my_N_hop;
-  m->last_hop = msg->last_hop;
-  m->input_chan = input_chan;
-  m->intm_group_id = msg->intm_group_id;
-  m->type = R_SEND;
-  m->wait_type = -1;
-  m->route = msg->route;
-
-  tw_event_send(e);  
+   tw_event_send(e);  
 }
 /////////////////////////////////////////// Router related functions /////////////////////////////////
 void router_setup(router_state * r, tw_lp * lp)
@@ -1072,50 +1196,69 @@ void router_setup(router_state * r, tw_lp * lp)
 	//fprintf(dragonfly_event_log, "\n Router %d connected to Router %d Group %d to Group %d ", local_router_id, r->global_channel[i], r->group_id, (r->global_channel[i]/NUM_ROUTER));
    #endif
     }
+  r->waiting_list = tw_calloc(TW_LOC, "waiting list", sizeof(struct waiting_packet), ROUTER_WAITING_PACK_COUNT);
+
+  for (j = 0; j < ROUTER_WAITING_PACK_COUNT - 1; j++) {
+     r->waiting_list[j].next = &r->waiting_list[j + 1];
+     // 16-05
+     r->waiting_list[j].packet = NULL;
+     r->waiting_list[j].chan = -1;
+  }
+  
+  r->waiting_list[j].next = NULL;
+  r->waiting_list[j].chan = -1;
+  r->head = &r->waiting_list[0];
+  r->wait_count = 0;
 }	
 /*If a packet arrives at a router and the channel is not available, the router maintains a list of waiting packets and the respective channels
 for which the packets are waiting */
 void
 update_router_waiting_list( router_state * s,
+			    tw_bf * bf,
                         terminal_message * msg,
                         tw_lp * lp )
 {
-   waiting_list * tmp = malloc(sizeof(waiting_list));
-   waiting_list * tmp2 = malloc(sizeof(waiting_list));
+   bf->c3 = 0;
+   int loc = s->wait_count, chan;
+   
+   if(loc >= ROUTER_WAITING_PACK_COUNT)
+    {
+//       In the unusual case where all waiting packets are full, the packets will be dropped
+//       printf(" Reached maximum count of linked list %d ", s->wait_count);
+       bf->c3 = 1;
+       return;
+    }
 
-   tmp->packet = malloc(sizeof(terminal_message));
-   tmp->packet = msg;
-   tmp->next = NULL;
+//   if(msg->wait_type == R_ARRIVE)
+//	chan = msg->input_chan;
+//     else
+//         if(msg->wait_type == R_SEND)
+	   chan = msg->vc_index;
+//          else
+//  	      printf("\n ---- Invalid wait type in the queue %d ", msg->wait_type);
 
-   if(msg->wait_type == R_ARRIVE)
-	tmp->chan = msg->input_chan;
-   else
-     if(msg->wait_type == R_SEND)
-	tmp->chan = msg->output_chan;
-      else
-  	printf("\n ---- Invalid wait type in the queue %d ", msg->wait_type);
-
-if(msg->packet_ID == TRACK)
-  printf("\n BEING ADDED TO THE QUEUE");
-   //if(msg->wait_type != GENERATE && msg->wait_type != SEND)
-   //  printf("\n Invalid wait type %d ", msg->wait_type);
-
-   if( s->root == NULL )
-   {
-      // Insert at the root
-      s->root = tmp;
-   }
-  else
-   {
-     tmp2 = s->root;
-     // Traverse down to the end of the list
-     while( tmp2->next != NULL )
-      tmp2 = tmp2->next;
-
-     // Append at the end of the list
-      tmp2->next = tmp;
-   }
+   s->waiting_list[loc].chan = chan;
+   s->waiting_list[loc].packet = msg;
+   
+   s->wait_count++;
 }
+
+void 
+waiting_router_packet_free(router_state * s, int loc)
+{
+  int i, max_count = s->wait_count -1;
+
+  for(i = loc; i < max_count; i++) {
+       s->waiting_list[i].chan = s->waiting_list[i + 1].chan;
+       s->waiting_list[i].packet = s->waiting_list[i + 1].packet;
+  }
+  s->waiting_list[max_count].packet = NULL;
+  // 16-05
+  s->waiting_list[max_count].chan = -1;
+
+  s->wait_count--;
+}
+
 
 /*Whenever an input or output channel is set to idle, the reschedule event is triggered to send the next packet */
 void
@@ -1125,51 +1268,47 @@ schedule_router_waiting_msg( router_state * s,
                            tw_lp * lp,
 			   int chan)
 {
-  if( s->root == NULL )
+  bf->c3 = 1;
+  if( s->wait_count <= 0 )
+   {
     return;
+   }
 
-  waiting_list * current = s->root;
-  waiting_list * head = s->root;
-  waiting_list * prev;
+  waiting_packet * current = s->head;
+  int loc=0;
+  tw_event * e_h;
+  terminal_message * m;
 
-  while( current != NULL )
+  while(current != NULL)
   {
     if( current->chan == chan )
      {
-     if(current->packet->wait_type == R_ARRIVE )
-     {
-      //&& s->buffer[ current->dir + ( current->dim * 2 ) ][ 0 ] >= ( 2 * msg->packet_size )/TOKEN_SIZE )
-      router_packet_receive(s, bf, current->packet, lp);
-     }
-     else if( current->packet->wait_type == R_SEND )
-       {
-        router_packet_send(s, bf, current->packet, lp);
-      }
-      else
-         printf("\n INVALID wait type %d travel start time %lf packet id %d msg type %d ", current->packet->wait_type, current->packet->travel_start_time, current->packet->packet_ID, current->packet->type);
+//       printf("\n Waiting chan %d ", chan);
+       // 16-05
+       bf->c3 = 0;
+       e_h = tw_event_new( lp->gid, 0.001, lp );
+       m = tw_event_data( e_h );
+       copyData(current->packet, m);
 
-      if( current == head )
-        s->root = head->next;
-       else
-        prev->next = current->next;
+       copyData(current->packet, msg);
+       msg->wait_loc = loc;
 
-     free( current );
-     break;
+//       changed from R_ARRIVE to R_SEND 16-05
+       m->type = R_SEND;
+       tw_event_send(e_h);       
+       waiting_router_packet_free(s, loc);
+
+       return;
      }
-   else
-   {
-    prev = current;
-    current = current->next;
-   }
+     else
+	current = current->next;
+   loc++;
   }
 }
 void router_buf_update(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
 {
    // Update the buffer space associated with this router LP 
     int msg_indx = msg->vc_index;
-
-    if(msg->packet_ID == TRACK)
-      printf("\n (%lf) [Router %d] VC OCCUPANCY for channel %d is %d Packet ID %lld", tw_now(lp), (int)lp->gid, msg_indx, s->vc_occupancy[msg_indx], msg->packet_ID);
 
     s->vc_occupancy[msg_indx]--;
     s->output_vc_state[msg_indx] = VC_IDLE;
@@ -1193,11 +1332,11 @@ void router_event(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * 
 	   break;
 
 	   case WAIT:
-               update_router_waiting_list( s, msg, lp );
+               update_router_waiting_list( s, bf, msg, lp );
           break;
 
 	   default:
-		  printf("\n (%lf) [Router %d] Router Message type not supported %d", tw_now(lp), (int)lp->gid, msg->type);
+//		  printf("\n (%lf) [Router %d] Router Message type not supported %d dest terminal id %d packet ID %d ", tw_now(lp), (int)lp->gid, msg->type, (int)msg->dest_terminal_id, (int)msg->packet_ID);
 	   break;
    }	   
 }
@@ -1213,55 +1352,82 @@ void terminal_rc_event_handler(terminal_state * s, tw_bf * bf, terminal_message 
    {
 	   case T_GENERATE:
 		 {
-		  if(bf->c3 == 1)
-		  {
-		     int vc = msg->saved_vc;
-		     N_generated_storage[index]--;
-		     s->packet_counter--;
-		     s->output_vc_state[vc] = VC_IDLE;
-		     tw_rand_reverse_unif(lp->rng);
-		     tw_rand_reverse_unif(lp->rng);
-		  }
-		    tw_rand_reverse_unif(lp->rng);
-
+                  tw_rand_reverse_unif(lp->rng);
 		 }
 	   break;
 	   
 	   case T_SEND:
 	         {
+		   if(!bf->c3) 
+		    {
+			int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
+			N_generated_storage[index]--;	
+		    }
+	           s->terminal_available_time = msg->saved_available_time;
+		   tw_rand_reverse_unif(lp->rng);	
 		   int vc = msg->saved_vc;
 		   s->vc_occupancy[vc]--;
-		   tw_rand_reverse_unif(lp->rng);
-		   s->terminal_available_time = msg->saved_available_time;
-		   s->output_vc_state[vc] = VC_ACTIVE;
+		   s->packet_counter--;
+		   s->output_vc_state[vc] = VC_IDLE;
 		 }
 	   break;
 
 	   case T_ARRIVE:
 	   	 {
-		    tw_rand_reverse_unif(lp->rng);	 
+
 		 }
            break;
 
-	   /*case T_PROCESS:
-	        if ( bf->c3 == 0 )
+	   case WAIT:
+		{
+		  if(!bf->c3)
 		   {
-		      N_finished--;
-		      N_finished_storage[index]--;
-		      total_time -= tw_now(lp) - msg->travel_start_time;
-		      total_hops -= msg->my_N_hop;
-	         }
-	   break;*/
+		     s->wait_count--;
+
+		     int loc = s->wait_count; 	
+		     // 16-05
+		     s->waiting_list[loc].chan = -1;
+		     s->waiting_list[loc].packet = NULL;
+		  }
+		}
+	   break;
 
 	   case BUFFER:
 	        {
 		   int msg_indx = msg->vc_index;
 		   s->vc_occupancy[msg_indx]++;
-		   if(s->vc_occupancy[msg_indx] == TERMINAL_VC_SIZE)
+		   if(s->vc_occupancy[msg_indx] == TERMINAL_VC_SIZE * num_chunks)
          	     {
 			s->output_vc_state[msg_indx] = VC_CREDIT;
 	             }
+		   
+		   if(!bf->c3)
+		     {
+		       int loc = msg->wait_loc, i;
+		       int max_count = s->wait_count;
 
+                        for(i = max_count; i > loc ; i--)
+                      	{
+                          s->waiting_list[i].chan = s->waiting_list[i-1].chan;
+                          s->waiting_list[i].packet = s->waiting_list[i-1].packet;
+                      	}
+                       s->waiting_list[loc].chan = msg->saved_vc;
+                       s->waiting_list[loc].packet = msg;
+                       s->wait_count++;	
+		     }
+		}
+	   break;
+	
+	  case FINISH:
+		{
+		    N_finished--;
+		    int index = floor(N_COLLECT_POINTS*(tw_now(lp)/g_tw_ts_end));
+		    N_finished_storage[index]--;
+		    total_time -= (tw_now(lp) - msg->travel_start_time);
+		    total_hops -= msg->my_N_hop;
+		    if(!bf->c3)
+		         max_latency = msg->saved_available_time;
+                    
 		}
    }
 }
@@ -1272,65 +1438,122 @@ void router_rc_event_handler(router_state * s, tw_bf * bf, terminal_message * ms
     {
             case R_SEND:
 		    {
-			if(bf->c2 == 0)
-			 {
-			   tw_rand_reverse_unif(lp->rng);
-			 }
-
-			tw_rand_reverse_unif(lp->rng);
-
+		        tw_rand_reverse_unif(lp->rng);
 			if(bf->c3 == 1)
 			 {    
-			   int input_chan = msg->input_chan;
-			   int output_chan = msg->old_vc;
-			   int output_port = output_chan/NUM_VC;
+			    tw_rand_reverse_unif(lp->rng);
+			    int output_chan = msg->old_vc;
+			    int output_port = output_chan/NUM_VC;
 
-			   s->input_vc_state[input_chan] = VC_ALLOC;		    
-			   s->output_vc_state[output_chan] = VC_IDLE;
-			   s->next_output_available_time[output_port] = msg->saved_available_time;
-			   s->vc_occupancy[output_chan]--;
-			   //s->next_credit_available_time[output_port] = msg->saved_credit_time;
+			    s->next_output_available_time[output_port] = msg->saved_available_time;
+			    s->vc_occupancy[output_chan]--;
+			    s->output_vc_state[output_chan]=VC_IDLE;
 			 }
-			if(bf->c1 == 1)
-				minimal_count--;
-			if(bf->c4 == 1)
-				nonmin_count--;
+
+			  if(!bf->c2)
+			   tw_rand_reverse_unif(lp->rng);
+			//if(bf->c1 == 1)
+			//	minimal_count--;
+			//if(bf->c4 == 1)
+			//	nonmin_count--;
 		    }
 	    break;
 
 	    case R_ARRIVE:
 	    	    {
-		      if(bf->c3 == 1)
-		       {
-		        int input_chan = msg->input_chan;
-			int input_port = input_chan/NUM_VC;
+		        //int input_chan = msg->input_chan;
+			//int input_port = input_chan/NUM_VC;
 		      
-		        s->next_input_available_time[input_port] = msg->saved_available_time;
-		        s->input_vc_state[input_chan] = VC_IDLE;
+		        //s->next_input_available_time[input_port] = msg->saved_available_time;
+		        //s->input_vc_state[input_chan] = VC_IDLE;
 
 			msg->my_N_hop--;
-		       }
-		      else
-		       {
-		        tw_rand_reverse_unif(lp->rng);
-		       }
+			tw_rand_reverse_unif(lp->rng);
 		    }
 	    break;
 
 	    case BUFFER:
 	    	   {
 		      int msg_indx = msg->vc_index;
+                      s->vc_occupancy[msg_indx]++;
 
-		      s->vc_occupancy[msg_indx]++;
+                      int buf = LOCAL_VC_SIZE;
 
-		      if(s->vc_occupancy[msg_indx] == LOCAL_VC_SIZE)
+		      if(msg->last_hop == GLOBAL)
+			 buf = GLOBAL_VC_SIZE;
+		       else if(msg->last_hop == TERMINAL)
+			 buf = TERMINAL_VC_SIZE;
+	 
+		      if(s->vc_occupancy[msg_indx] >= buf * num_chunks)
                         {
                           s->output_vc_state[msg_indx] = VC_CREDIT;
                         }
-		   
+
+                      if(!bf->c3)
+                       {
+                         int loc = msg->wait_loc, i;
+                         int max_count = s->wait_count;
+
+                          for(i = max_count; i > loc ; i--)
+                          {
+                            s->waiting_list[i].chan = s->waiting_list[i-1].chan;
+                            s->waiting_list[i].packet = s->waiting_list[i-1].packet;
+                          }
+//			  changed from saved_vc to vc_index 16-05
+                          s->waiting_list[loc].chan = msg->vc_index;
+                          s->waiting_list[loc].packet = msg;
+                          s->wait_count++;
+                       }
 		   }
 	    break;
+	  
+	   case WAIT:
+		  {
+		      if(!bf->c3)
+		       {
+			s->wait_count--;
+			int loc = s->wait_count;
+			// 16-05
+			s->waiting_list[loc].chan = -1;
+			s->waiting_list[loc].packet = NULL;
+		      }
+		  }
     }
+}
+
+void mpi_rc_event_handler(process_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+{
+  // TO BE DONE
+   switch(msg->type)
+	{
+	    case MPI_SEND:
+	            {
+		      if(!bf->c1 || !bf->c4)
+			return;
+
+		      if(!bf->c2)
+			 tw_rand_reverse_unif(lp->rng);
+
+		      if(!bf->c3)
+			 tw_rand_reverse_unif(lp->rng);	
+
+		     int i;
+		     for(i = 0; i < num_packets; i++)
+			{
+			   tw_rand_reverse_unif(lp->rng);
+			   s->available_time = msg->saved_available_time;
+			   s->message_counter--;
+			}
+		     tw_rand_reverse_unif(lp->rng);
+		    }
+	    break;
+
+ 	   case MPI_RECV:
+		  {
+
+		  }
+	   break;
+	}
 }
 ////////////////////////////////////////////////////// MAIN ///////////////////////////////////////////////////////
 ////////////////////////////////////////////////////// LP TYPES /////////////////////////////////////////////////
@@ -1339,29 +1562,27 @@ tw_lptype dragonfly_lps[] =
    // Terminal handling functions
    {
     (init_f)terminal_init,
-   
     (event_f) terminal_event,
-   
     (revent_f) terminal_rc_event_handler,
-   
     (final_f) final,
-   
     (map_f) mapping,
-   
     sizeof(terminal_state)
     },
    {
      (init_f) router_setup,
-   
      (event_f) router_event,
-   
      (revent_f) router_rc_event_handler,
-   
      (final_f) final,
-   
      (map_f) mapping,
-   
      sizeof(router_state),
+   },
+   {
+     (init_f) mpi_init,
+     (event_f) mpi_event,
+     (revent_f) mpi_rc_event_handler,
+     (final_f) final,
+     (map_f) mapping,
+     sizeof(process_state),
    },
    {0},
 };
@@ -1382,9 +1603,12 @@ tw_lp * dragonfly_mapping_to_lp(tw_lpid lpid)
   int index;
 
   if(lpid < total_routers)
-   index = lpid - g_tw_mynode * nlp_router_per_pe - get_router_rem();
-  else
-   index = nlp_router_per_pe + (lpid - g_tw_mynode * nlp_terminal_per_pe - get_terminal_rem() - total_routers);
+      index = lpid - g_tw_mynode * nlp_router_per_pe - get_router_rem();
+  else 
+     if(lpid >= total_routers && lpid < total_routers+total_terminals)
+        index = nlp_router_per_pe + (lpid - g_tw_mynode * nlp_terminal_per_pe - get_terminal_rem() - total_routers);
+   else
+	 index = nlp_router_per_pe + nlp_terminal_per_pe + (lpid - g_tw_mynode * nlp_mpi_procs_per_pe - get_terminal_rem() - total_routers - total_terminals);	
 
  // printf("\n Inverse mapping index %d for LP %d g_tw_mynode %d ", index, (int)lpid, g_tw_mynode); 
   return g_tw_lp[index];
@@ -1393,34 +1617,32 @@ tw_lp * dragonfly_mapping_to_lp(tw_lpid lpid)
 void dragonfly_mapping(void)
 {
   tw_lpid kpid;
-
   tw_pe * pe;
 
   int nkp_per_pe=16;
-
   for(kpid = 0; kpid < nkp_per_pe; kpid++)
     tw_kp_onpe(kpid, g_tw_pe[0]);
 
   int i;
-
-  //printf("\n Node %d router start %d Terminal start %d ", g_tw_mynode, g_tw_mynode * nlp_router_per_pe + get_router_rem(), total_routers + g_tw_mynode * nlp_terminal_per_pe + get_terminal_rem());
+  //printf("\n Node %d router start %d Terminal start %d MPI procs start %d ", g_tw_mynode, 
+//									    g_tw_mynode * nlp_router_per_pe + get_router_rem(), 
+//									    total_routers + g_tw_mynode * nlp_terminal_per_pe + get_terminal_rem(), 
+//									    total_routers + total_terminals + g_tw_mynode * nlp_mpi_procs_per_pe);
   for(i = 0; i < nlp_router_per_pe; i++)
    {
      kpid = i % g_tw_nkp;
 
      pe = tw_getpe(kpid % g_tw_npe);
-
+     
      tw_lp_onpe(i, pe, g_tw_mynode * nlp_router_per_pe + i + get_router_rem());
-
      tw_lp_onkp(g_tw_lp[i], g_tw_kp[kpid]);
-
-    tw_lp_settype(i, &dragonfly_lps[1]);
+     tw_lp_settype(i, &dragonfly_lps[1]);
 
 #ifdef DEBUG
 //    printf("\n [Node %d] Local Router ID %d Global Router ID %d ", g_tw_mynode, i, g_tw_mynode * nlp_router_per_pe + i + get_router_rem());
 #endif
    } 
-
+//apping for terminal LP
   for(i = 0; i < nlp_terminal_per_pe; i++)
    {
       kpid = i % g_tw_nkp;
@@ -1428,10 +1650,23 @@ void dragonfly_mapping(void)
       pe = tw_getpe(kpid % g_tw_npe);
 
       tw_lp_onpe(nlp_router_per_pe + i, pe, total_routers + g_tw_mynode * nlp_terminal_per_pe + i + get_terminal_rem());
-
       tw_lp_onkp(g_tw_lp[nlp_router_per_pe + i], g_tw_kp[kpid]);
-
       tw_lp_settype(nlp_router_per_pe + i, &dragonfly_lps[0]);
+
+#ifdef DEBUG
+//    printf("\n [Node %d] Local Terminal ID %d Global Terminal ID %d ", g_tw_mynode, nlp_router_per_pe + i, total_routers + g_tw_mynode * nlp_terminal_per_pe + i + get_terminal_rem());
+#endif
+    }
+// mapping for MPI process LP
+  for(i = 0; i < nlp_mpi_procs_per_pe; i++)
+   {
+      kpid = i % g_tw_nkp;
+
+      pe = tw_getpe(kpid % g_tw_npe);
+
+      tw_lp_onpe(nlp_router_per_pe + nlp_terminal_per_pe + i, pe, total_routers + total_terminals + g_tw_mynode * nlp_mpi_procs_per_pe + i + get_terminal_rem());
+      tw_lp_onkp(g_tw_lp[nlp_router_per_pe + nlp_terminal_per_pe + i], g_tw_kp[kpid]);
+      tw_lp_settype(nlp_router_per_pe + nlp_terminal_per_pe + i, &dragonfly_lps[2]);
 
 #ifdef DEBUG
 //    printf("\n [Node %d] Local Terminal ID %d Global Terminal ID %d ", g_tw_mynode, nlp_router_per_pe + i, total_routers + g_tw_mynode * nlp_terminal_per_pe + i + get_terminal_rem());
@@ -1444,7 +1679,6 @@ int main(int argc, char **argv)
 {
      //char log[32];
      tw_opt_add(app_opt);
-   
      tw_init(&argc, &argv);
 
      // UNIFORM_RANDOM
@@ -1453,35 +1687,39 @@ int main(int argc, char **argv)
      adaptive_threshold = 0;
 
      minimal_count = 0;
-
      nonmin_count = 0;
+     num_packets = MESSAGE_SIZE / PACKET_SIZE;
+     num_chunks = PACKET_SIZE / CHUNK_SIZE;
+     max_packets = INJECTION_INTERVAL / MEAN_INTERVAL;
 
      total_routers=NUM_ROUTER*num_groups;
-
      total_terminals=NUM_ROUTER*NUM_TERMINALS*num_groups;
+     total_mpi_procs = NUM_ROUTER*NUM_TERMINALS*num_groups;
 
+//    Assume a one-to-one mapping of MPI processes to terminals/nodes
      nlp_terminal_per_pe = total_terminals/tw_nnodes()/g_tw_npe;
+     nlp_mpi_procs_per_pe = total_mpi_procs/tw_nnodes()/g_tw_npe;
 
      terminal_rem = total_terminals % (tw_nnodes()/g_tw_npe);
 
      if(g_tw_mynode < terminal_rem)
+     {
        nlp_terminal_per_pe++;
+       nlp_mpi_procs_per_pe++;
+     }
 
      nlp_router_per_pe = total_routers/tw_nnodes()/g_tw_npe;
 
-      router_rem = total_routers % (tw_nnodes()/g_tw_npe);
+     router_rem = total_routers % (tw_nnodes()/g_tw_npe);
 
       if(g_tw_mynode < router_rem)
         nlp_router_per_pe++;
 
-      range_start=nlp_router_per_pe + nlp_terminal_per_pe;
+     range_start=nlp_router_per_pe + nlp_terminal_per_pe + nlp_mpi_procs_per_pe;
 
-    g_tw_mapping=CUSTOM;
-    
-    g_tw_custom_initial_mapping=&dragonfly_mapping;
-    
-    g_tw_custom_lp_global_to_local_map=&dragonfly_mapping_to_lp;
-  
+     g_tw_mapping=CUSTOM;
+     g_tw_custom_initial_mapping=&dragonfly_mapping;
+     g_tw_custom_lp_global_to_local_map=&dragonfly_mapping_to_lp;
      g_tw_events_per_pe = mem_factor * (nlp_terminal_per_pe/g_tw_npe) * (g_tw_ts_end/MEAN_INTERVAL);
 
      tw_define_lps(range_start, sizeof(terminal_message), 0);
@@ -1504,21 +1742,20 @@ int main(int argc, char **argv)
 	  printf("\n Arrival rate %f g_tw_mynode %d total %d nlp_terminal_per_pe is %d, nlp_router_per_pe is %d \n ", MEAN_INTERVAL, (int)g_tw_mynode, range_start, nlp_terminal_per_pe, nlp_router_per_pe);
 	}
 #endif
+    packet_offset = (g_tw_ts_end/MEAN_INTERVAL) * num_packets;
     tw_run();
 
     if(tw_ismaster())
     {
       printf("\nDragonfly Network Model Statistics:\n");
       printf("\t%-50s %11lld\n", "Number of nodes", nlp_terminal_per_pe * g_tw_npe * tw_nnodes());
-      printf("\n Slowest packet %lld ", max_packet);
+//      printf("\n Slowest packet %lld ", max_packet);
       if(ROUTING == ADAPTIVE)
 	      printf("\n ADAPTIVE ROUTING STATS: %d packets routed minimally %d packets routed non-minimally ", minimal_count, nonmin_count);
     }
 
     unsigned long long total_finished_storage[N_COLLECT_POINTS];
- 
     unsigned long long total_generated_storage[N_COLLECT_POINTS];
-  
     unsigned long long N_total_finish,N_total_hop;
 
    tw_stime total_time_sum,g_max_latency;
@@ -1533,62 +1770,56 @@ int main(int argc, char **argv)
      MPI_Reduce( &N_generated_storage[i], &total_generated_storage[i],1,
                   MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
      }
-   	MPI_Reduce( &total_time, &total_time_sum,1,
+     MPI_Reduce( &total_time, &total_time_sum,1,
                     MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
    
-   	MPI_Reduce( &N_finished, &N_total_finish,1,
+     MPI_Reduce( &N_finished, &N_total_finish,1,
                     MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
    
-   	MPI_Reduce( &total_hops, &N_total_hop,1,
+     MPI_Reduce( &total_hops, &N_total_hop,1,
                     MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
    
-   	MPI_Reduce( &max_latency, &g_max_latency,1,
+     MPI_Reduce( &max_latency, &g_max_latency,1,
                     MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
-      for( i=1; i<N_COLLECT_POINTS; i++ )
-          {
-            total_finished_storage[i]+=total_finished_storage[i-1];
-            total_generated_storage[i]+=total_generated_storage[i-1];
-          }
+    for( i=1; i<N_COLLECT_POINTS; i++ )
+       {
+         total_finished_storage[i]+=total_finished_storage[i-1];
+         total_generated_storage[i]+=total_generated_storage[i-1];
+       }
    
-      if(tw_ismaster())
-          {
-            printf("\n ****************** \n");
-    
-    	    printf("\n total finish:         %lld and %lld; \n",
+     if(tw_ismaster())
+      {
+           printf("\n ****************** \n");
+           printf("\n total finish:         %lld and %lld; \n",
                    total_finished_storage[N_COLLECT_POINTS-1],N_total_finish);
-    
-    	    printf("\n total generate:       %lld; \n",
-                   total_generated_storage[N_COLLECT_POINTS-1]);
-    
-    	    printf("\n total hops:           %lf; \n",
+           printf("\n total generate:       %lld; \n",
+                  total_generated_storage[N_COLLECT_POINTS-1]);
+           printf("\n total hops:           %lf; \n",
                    (double)N_total_hop/total_finished_storage[N_COLLECT_POINTS-1]);
-    
-    	    printf("\n average travel time:  %lf; \n\n",
+           printf("\n average travel time:  %lf; \n\n",
                    total_time_sum/total_finished_storage[N_COLLECT_POINTS-1]);
 
-            for( i=0; i<N_COLLECT_POINTS; i++ )
-              {
-                printf(" %d ",i*100/N_COLLECT_POINTS);
-                printf("finish: %lld; generate: %lld; alive: %lld\n",
-                       total_finished_storage[i],
-                       total_generated_storage[i],
-                       total_generated_storage[i]-total_finished_storage[i]);
-
-              }
+          for( i=0; i<N_COLLECT_POINTS; i++ )
+           {
+             printf(" %d ",i*100/N_COLLECT_POINTS);
+             printf("finish: %lld; generate: %lld; alive: %lld\n",
+                     total_finished_storage[i],
+                     total_generated_storage[i],
+                     total_generated_storage[i]-total_finished_storage[i]);
+           }
 
             // capture the steady state statistics
-            unsigned long long steady_sum=0;
-            for( i = N_COLLECT_POINTS/2; i<N_COLLECT_POINTS;i++)
-              steady_sum+=total_generated_storage[i]-total_finished_storage[i];
-            printf("\n Steady state, packet alive: %lld\n",
+          unsigned long long steady_sum=0;
+          for( i = N_COLLECT_POINTS/2; i<N_COLLECT_POINTS;i++)
+             steady_sum+=total_generated_storage[i]-total_finished_storage[i];
+        
+          printf("\n Steady state, packet alive: %lld\n",
                    2*steady_sum/N_COLLECT_POINTS);
+          printf("\nMax latency is %lf\n\n",g_max_latency);
 
-            printf("\nMax latency is %lf\n\n",g_max_latency);
-
-          }
+      }
    tw_end();
-
    return 0;
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
