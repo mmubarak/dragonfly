@@ -150,7 +150,6 @@ void router_credit_send(router_state * s, tw_bf * bf, terminal_message * msg, tw
 
    buf_e = tw_event_new(dest, s->next_credit_available_time[output_port] - tw_now(lp) , lp);
 
-  buf_e = tw_event_new(dest, 0.1, lp);
   buf_msg = tw_event_data(buf_e);
   buf_msg->vc_index = msg->saved_vc;
   buf_msg->type=BUFFER;
