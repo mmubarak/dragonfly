@@ -18,12 +18,12 @@
 //#define GLOBAL_DELAY 10.0
 
 //2 GB/secs
-#define GLOBAL_BANDWIDTH 6.611 
-#define LOCAL_BANDWIDTH 1.6111
+#define GLOBAL_BANDWIDTH 1.611 
+#define LOCAL_BANDWIDTH 6.6111
 #define NODE_BANDWIDTH 1.074
 
 #define CREDIT_SIZE 8
-#define INJECTION_INTERVAL 20000
+#define INJECTION_INTERVAL 40000
 //16-05
 #define RESCHEDULE_DELAY 1.0
 // time to process a packet at destination terminal
@@ -33,23 +33,23 @@
 #define N_COLLECT_POINTS 20
 
 // virtual channel information
-#define LOCAL_VC_SIZE 64
-#define GLOBAL_VC_SIZE 64
-#define TERMINAL_VC_SIZE 64
+#define LOCAL_VC_SIZE 128
+#define GLOBAL_VC_SIZE 128
+#define TERMINAL_VC_SIZE 128
 
 // radix of each router
 #define RADIX (NUM_VC * NUM_ROUTER)+ (NUM_VC*GLOBAL_CHANNELS) + (NUM_VC * NUM_TERMINALS)
 
 
 // debugging parameters
-#define DEBUG 0
-#define TRACK 124026
+#define DEBUG 1
+#define TRACK 445202
 #define PRINT_ROUTER_TABLE 1
 
 #define NUM_ROWS NUM_ROUTER*NUM_TERMINALS
 #define NUM_COLS (NUM_ROUTER*NUM_TERMINALS)+1
-#define TERMINAL_WAITING_PACK_COUNT 21000
-#define ROUTER_WAITING_PACK_COUNT 200000
+#define TERMINAL_WAITING_PACK_COUNT 50000
+#define ROUTER_WAITING_PACK_COUNT 500000
 
 // arrival rate
 static double MEAN_INTERVAL=10.0;
