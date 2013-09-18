@@ -18,14 +18,13 @@
 //#define GLOBAL_DELAY 10.0
 
 //2 GB/secs
-#define GLOBAL_BANDWIDTH 1.611 
+#define GLOBAL_BANDWIDTH 6.611 
 #define LOCAL_BANDWIDTH 1.6111
 #define NODE_BANDWIDTH 1.074
 
 #define CREDIT_SIZE 8
 #define INJECTION_INTERVAL 20000
 //16-05
-#define ROUTER_DELAY 4.0
 #define RESCHEDULE_DELAY 1.0
 // time to process a packet at destination terminal
 #define MEAN_PROCESS 1.0
@@ -34,16 +33,16 @@
 #define N_COLLECT_POINTS 20
 
 // virtual channel information
-#define LOCAL_VC_SIZE 16
-#define GLOBAL_VC_SIZE 84
-#define TERMINAL_VC_SIZE 32
+#define LOCAL_VC_SIZE 64
+#define GLOBAL_VC_SIZE 64
+#define TERMINAL_VC_SIZE 64
 
 // radix of each router
 #define RADIX (NUM_VC * NUM_ROUTER)+ (NUM_VC*GLOBAL_CHANNELS) + (NUM_VC * NUM_TERMINALS)
 
 
 // debugging parameters
-#define DEBUG 1
+#define DEBUG 0
 #define TRACK 124026
 #define PRINT_ROUTER_TABLE 1
 
