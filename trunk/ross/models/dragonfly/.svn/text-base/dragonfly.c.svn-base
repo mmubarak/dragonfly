@@ -586,19 +586,6 @@ void final(terminal_state * s, tw_lp * lp)
 
 /////////////////////////////////////////// Router packet send/receive functions //////////////////////
 
-void router_buf_update(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
-{
-   // Update the buffer space associated with this router LP 
-    int msg_indx = msg->vc_index;
-
-    if(msg->packet_ID == TRACK)
-      printf("\n (%lf) [Router %d] VC OCCUPANCY for channel %d is %d Packet ID %lld", tw_now(lp), (int)lp->gid, msg_indx, s->vc_occupancy[msg_indx], msg->packet_ID);
-
-    s->vc_occupancy[msg_indx]--;
-    s->output_vc_state[msg_indx] = VC_IDLE;
-    schedule_router_waiting_msg(s, bf, msg, lp, msg_indx);
-}
-
 // Determine the input channel at which the message has arrived
 int get_input_chan(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
 {
@@ -1157,6 +1144,19 @@ schedule_router_waiting_msg( router_state * s,
    }
   }
 }
+void router_buf_update(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
+{
+   // Update the buffer space associated with this router LP 
+    int msg_indx = msg->vc_index;
+
+    if(msg->packet_ID == TRACK)
+      printf("\n (%lf) [Router %d] VC OCCUPANCY for channel %d is %d Packet ID %lld", tw_now(lp), (int)lp->gid, msg_indx, s->vc_occupancy[msg_indx], msg->packet_ID);
+
+    s->vc_occupancy[msg_indx]--;
+    s->output_vc_state[msg_indx] = VC_IDLE;
+    schedule_router_waiting_msg(s, bf, msg, lp, msg_indx);
+}
+
 void router_event(router_state * s, tw_bf * bf, terminal_message * msg, tw_lp * lp)
 {
   switch(msg->type)
