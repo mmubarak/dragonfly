@@ -286,7 +286,7 @@ mpi_msg_send( process_state * s,
     case NEAREST_ROUTER:
 	{
 		int local_offset = (lp->gid - total_routers) % NUM_TERMINALS;
-		int next_router_begin = total_routers + (((s->router_id + 1 ) % NUM_ROUTER )* NUM_TERMINALS);
+		int next_router_begin = total_routers + (((s->router_id + 1 ) % total_routers)* NUM_TERMINALS);
 		dst_lp = next_router_begin + (NUM_TERMINALS - local_offset);
 		if(dst_lp < next_router_begin || dst_lp > next_router_begin + NUM_TERMINALS)
                   printf("\n Incorrect destination for %d to %d ", lp->gid - total_routers, dst_lp - total_routers);
@@ -847,16 +847,15 @@ get_next_stop(router_state * s,
   if(msg->intm_group_id >= 0)
    {
       dest_group_id = msg->intm_group_id;
-      printf("\n msg intm grp id %d ", msg->intm_group_id);
    }
   else
    {
      dest_group_id = dest_router_id / NUM_ROUTER;
+//      printf("\n dest group id %d dest router %d current router %d ", dest_group_id, dest_router_id, lp->gid);
    }
   
   if(s->group_id == dest_group_id)
    {
-     printf("\n dest group id %d ", s->group_id);
      dest_lp = dest_router_id;
    }
    else

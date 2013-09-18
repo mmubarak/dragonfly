@@ -4,9 +4,9 @@
 #include <ross.h>
 
 // dragonfly basic configuration parameters
-#define GLOBAL_CHANNELS 24
-#define NUM_ROUTER 48
-#define NUM_TERMINALS 24
+#define GLOBAL_CHANNELS 8
+#define NUM_ROUTER 16
+#define NUM_TERMINALS 8
 
 #define MESSAGE_SIZE 512.0
 #define PACKET_SIZE 512.0
@@ -32,7 +32,7 @@
 #define N_COLLECT_POINTS 100
 
 // virtual channel information
-#define LOCAL_VC_SIZE 4096
+#define LOCAL_VC_SIZE 8192
 #define GLOBAL_VC_SIZE 8192
 #define TERMINAL_VC_SIZE 2048
 
