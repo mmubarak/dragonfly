@@ -245,6 +245,7 @@ int terminal_rem=0, router_rem=0;
 int num_terminal=0, num_router=0;
 unsigned long num_groups = NUM_ROUTER*GLOBAL_CHANNELS+1;
 int total_routers, total_terminals, total_mpi_procs;
+unsigned long long max_packet;
 
 static unsigned long long       total_hops = 0;
 static unsigned long long       N_finished = 0;

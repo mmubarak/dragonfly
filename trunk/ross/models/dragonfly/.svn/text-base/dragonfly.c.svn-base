@@ -1054,8 +1054,8 @@ router_packet_send( router_state * s,
   ts = ((1/bandwidth) * CHUNK_SIZE) + tw_rand_exponential(lp->rng, (double)CHUNK_SIZE/10000);
 
   s->next_output_available_time[output_port] = max(s->next_output_available_time[output_port], tw_now(lp));
-  s->next_output_available_time[output_port] += ROUTER_DELAY;
-  e = tw_event_new(next_stop, s->next_output_available_time[output_port] + ts - tw_now(lp), lp);
+  s->next_output_available_time[output_port] += ts;
+  e = tw_event_new(next_stop, s->next_output_available_time[output_port] - tw_now(lp), lp);
 
   m = tw_event_data(e);
 
@@ -1279,7 +1279,8 @@ schedule_router_waiting_msg( router_state * s,
   tw_event * e_h;
   terminal_message * m;
 
-  while(current != NULL)
+//  Changed from current!=NULL to current->next!=NULL 17th May
+  while(current->next!= NULL)
   {
     if( current->chan == chan )
      {
