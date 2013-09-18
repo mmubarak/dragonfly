@@ -1372,9 +1372,9 @@ const tw_optdef app_opt [] =
    TWOPT_GROUP("Dragonfly Model"),
    TWOPT_UINT("memory", opt_mem, "optimistic memory"),
    TWOPT_UINT("traffic", traffic, "UNIFORM RANDOM=1, DRAGONFLY ZONES=2, TRANSPOSE=3, NEAREST NEIGHBOR=4 "),
-   TWOPT_UINT("routing", ROUTING, "routing"),
+   TWOPT_UINT("routing", ROUTING, "MINIMAL=0, NON_MINIMAL=1, ADAPTIVE=2(ADAPTIVE ROUTING QUEUE CONGESTION SENSING FEATURE's DEVELOPMENT IN PROGRESS)"),
    TWOPT_UINT("mem_factor", mem_factor, "mem_factor"),
-   TWOPT_STIME("arrive_rate", MEAN_INTERVAL, "packet arrive rate"),
+   TWOPT_STIME("arrive_rate", MEAN_INTERVAL, "packet inter-arrival rate"),
    TWOPT_END()
 };
 
