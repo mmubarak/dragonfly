@@ -283,7 +283,17 @@ mpi_msg_send( process_state * s,
 	}
 	break;
 
-	DEFAULT:
+    case NEAREST_ROUTER:
+	{
+		int local_offset = (lp->gid - total_routers) % NUM_TERMINALS;
+		int next_router_begin = total_routers + (((s->router_id + 1 ) % NUM_ROUTER )* NUM_TERMINALS);
+		dst_lp = next_router_begin + (NUM_TERMINALS - local_offset);
+		if(dst_lp < next_router_begin || dst_lp > next_router_begin + NUM_TERMINALS)
+                  printf("\n Incorrect destination for %d to %d ", lp->gid - total_routers, dst_lp - total_routers);
+	}
+	break;
+
+    DEFAULT:
 	      printf("\n Undefined traffic pattern!");
     }
 //  Generate packets  of PACKET_SIZE
@@ -415,9 +425,6 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
   terminal_message *m;
   int i;
 
-//  if(msg->dest_terminal_id == -1)
-//	msg->dest_terminal_id = total_routers + tw_rand_integer(lp->rng, s->router_id * NUM_TERMINALS, (s->router_id + 1) * NUM_TERMINALS -1);
-
   for(i = 0; i < num_chunks; i++)
   {
 	  // Before generating a packet, check if the input queue is available
@@ -439,7 +446,6 @@ void packet_generate(terminal_state * s, tw_bf * bf, terminal_message * msg, tw_
        m->dest_terminal_id=msg->dest_terminal_id;
        m->packet_ID = msg->packet_ID;
        m->intm_group_id = -1;
-       // 16-05
        m->saved_vc=0;
        m->chunk_id = i;
        m->output_chan = -1;
@@ -841,6 +847,7 @@ get_next_stop(router_state * s,
   if(msg->intm_group_id >= 0)
    {
       dest_group_id = msg->intm_group_id;
+      printf("\n msg intm grp id %d ", msg->intm_group_id);
    }
   else
    {
@@ -849,6 +856,7 @@ get_next_stop(router_state * s,
   
   if(s->group_id == dest_group_id)
    {
+     printf("\n dest group id %d ", s->group_id);
      dest_lp = dest_router_id;
    }
    else
@@ -930,7 +938,7 @@ router_packet_send( router_state * s,
   if(output_port >= NUM_ROUTER && output_port < NUM_ROUTER + GLOBAL_CHANNELS)
   {
 	 //delay = GLOBAL_DELAY;
-//	 printf("\n Output port selected is %d ", output_port);
+	 //printf("\n Output port selected is %d ", output_port);
 	 bandwidth = GLOBAL_BANDWIDTH;
 	 global = 1;
 	 buf_size = GLOBAL_VC_SIZE;
