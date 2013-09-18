@@ -17,13 +17,12 @@
 //#define LOCAL_DELAY 1.0
 //#define GLOBAL_DELAY 10.0
 
-//2 GB/secs
 #define GLOBAL_BANDWIDTH 4.7 
 #define LOCAL_BANDWIDTH 5.25
 #define NODE_BANDWIDTH 5.25
 
 #define CREDIT_SIZE 8
-#define INJECTION_INTERVAL 40000
+#define INJECTION_INTERVAL 2000
 //16-05
 #define RESCHEDULE_DELAY 1.0
 // time to process a packet at destination terminal
@@ -33,9 +32,9 @@
 #define N_COLLECT_POINTS 100
 
 // virtual channel information
-#define LOCAL_VC_SIZE 512
-#define GLOBAL_VC_SIZE 1024
-#define TERMINAL_VC_SIZE 256
+#define LOCAL_VC_SIZE 2048
+#define GLOBAL_VC_SIZE 8192
+#define TERMINAL_VC_SIZE 2048
 
 // radix of each router
 #define RADIX (NUM_VC * NUM_ROUTER)+ (NUM_VC*GLOBAL_CHANNELS) + (NUM_VC * NUM_TERMINALS)
@@ -71,8 +70,8 @@ struct terminal_state
    unsigned int terminal_id;
 
    // Each terminal will have an input and output channel with the router
-   unsigned int vc_occupancy[NUM_VC];
-   unsigned int output_vc_state[NUM_VC];
+   int vc_occupancy[NUM_VC];
+   int output_vc_state[NUM_VC];
    tw_stime terminal_available_time;
    tw_stime next_credit_available_time;
    
@@ -188,7 +187,7 @@ struct router_state
 //   tw_stime next_credit_available_time[RADIX];
 
 //   unsigned int credit_occupancy[RADIX];   
-   unsigned int vc_occupancy[RADIX];
+   int vc_occupancy[RADIX];
 
 //   unsigned int input_vc_state[RADIX];
    unsigned int output_vc_state[RADIX];
