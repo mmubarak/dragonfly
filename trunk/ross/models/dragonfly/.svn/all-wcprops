@@ -1,0 +1,23 @@
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/rossnet/!svn/ver/569/trunk/ross/models/dragonfly
+END
+dragonfly.c
+K 25
+svn:wc:ra_dav:version-url
+V 65
+/svn/rossnet/!svn/ver/569/trunk/ross/models/dragonfly/dragonfly.c
+END
+dragonfly.h
+K 25
+svn:wc:ra_dav:version-url
+V 65
+/svn/rossnet/!svn/ver/569/trunk/ross/models/dragonfly/dragonfly.h
+END
+CMakeLists.txt
+K 25
+svn:wc:ra_dav:version-url
+V 68
+/svn/rossnet/!svn/ver/569/trunk/ross/models/dragonfly/CMakeLists.txt
+END
