@@ -12,18 +12,18 @@
 
 // delay parameters
 #define TERMINAL_DELAY 1.0
-#define ROUTING_DELAY 5
 #define LOCAL_DELAY 10.0
 #define GLOBAL_DELAY 100.0
 #define RESCHEDULE_DELAY 1
 
 // time to process a packet at destination terminal
 #define MEAN_PROCESS 0
+#define ROUTING MINIMAL
+#define NUM_VC 2
 
 #define N_COLLECT_POINTS 20
 
 // virtual channel information
-#define NUM_VC 2
 #define VC_BUF_SIZE 256
 
 // radix of each router
@@ -32,11 +32,14 @@
 
 // debugging parameters
 #define DEBUG 1
-#define TRACK 320232
+#define TRACK 77682
 #define PRINT_ROUTER_TABLE 1
 
 // arrival rate
 static double MEAN_INTERVAL;
+
+static int routing;
+static int traffic;
 
 typedef enum event_t event_t;
 typedef struct terminal_state terminal_state;
@@ -92,10 +95,23 @@ enum last_hop
    LOCAL,
    TERMINAL
 };
+
+enum ROUTING_ALGO
+{
+   MINIMAL,
+   NON_MINIMAL,
+   ADAPTIVE
+};
+
+enum TRAFFIC_PATTERN
+{
+  UNIFORM_RANDOM,
+  WORST_CASE
+};
+
 struct terminal_message
 {
   tw_stime travel_start_time;
-  
   unsigned long long packet_ID;
   event_t  type;
   
@@ -119,6 +135,8 @@ struct terminal_message
    
    tw_stime saved_available_time;
    tw_stime saved_credit_time;
+
+   int intm_group_id;
 };
 
 struct router_state
@@ -146,15 +164,21 @@ static int       nlp_terminal_per_pe;
 static int       nlp_router_per_pe;
 static int opt_mem = 10000;
 
+int minimal_count, nonmin_count;
+
+int adaptive_threshold;
+
 tw_stime         average_travel_time = 0;
 tw_stime         total_time = 0;
 tw_stime         max_latency = 0;
 
 int range_start;
+int num_vc;
 int terminal_rem=0, router_rem=0;
 int num_terminal=0, num_router=0;
 unsigned long num_groups = NUM_ROUTER*GLOBAL_CHANNELS+1;
 int total_routers, total_terminals;
+unsigned long long max_packet;
 
 static unsigned long long       total_hops = 0;
 static unsigned long long       N_finished = 0;
