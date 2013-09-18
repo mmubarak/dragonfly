@@ -8,7 +8,7 @@
 #define NUM_ROUTER 8
 #define NUM_TERMINALS 4
 
-#define PACKET_SIZE 256.0
+#define PACKET_SIZE 512.0
 
 // delay parameters
 #define TERMINAL_DELAY 1.0
@@ -23,7 +23,6 @@
 
 // time to process a packet at destination terminal
 #define MEAN_PROCESS 4600
-#define ROUTING MINIMAL
 #define NUM_VC 1
 
 #define N_COLLECT_POINTS 20
@@ -39,20 +38,24 @@
 
 // debugging parameters
 #define DEBUG 1
-#define TRACK 106513
+#define TRACK 12728
 #define PRINT_ROUTER_TABLE 1
 
-// arrival rate
-static double MEAN_INTERVAL=1.43;
+#define NUM_ROWS 32
+#define NUM_COLS 33
 
-static int routing;
-static int traffic;
+#define HEAD_SIZE 8
+
+// arrival rate
+static double MEAN_INTERVAL=10.0;
+
 
 typedef enum event_t event_t;
 typedef struct terminal_state terminal_state;
 typedef struct terminal_message terminal_message;
 typedef struct buf_space_message buf_space_message;
 typedef struct router_state router_state;
+typedef struct waiting_list waiting_list;
 
 struct terminal_state
 {
@@ -67,6 +70,14 @@ struct terminal_state
    unsigned int output_vc_state[NUM_VC];
    int terminal_available_time;
    
+   //first element of linked list
+   struct waiting_list * root;
+
+  // pointer to the linked list
+   struct waiting_list * ptr;   
+
+//   For matrix transpose traffic
+   int row, col;
 };
 
 // Terminal generate, sends and arrival T_SEND, T_ARRIVAL, T_GENERATE
@@ -75,7 +86,6 @@ struct terminal_state
 
 enum event_t
 {
-  T_GENERATE,
   RESCHEDULE,
   T_ARRIVE,
   T_SEND,
@@ -83,7 +93,9 @@ enum event_t
   R_SEND,
   R_ARRIVE,
 
-  BUFFER
+  BUFFER,
+  WAIT,
+  T_GENERATE
 };
 
 enum vc_status
@@ -110,8 +122,10 @@ enum ROUTING_ALGO
 
 enum TRAFFIC_PATTERN
 {
-  UNIFORM_RANDOM,
-  WORST_CASE
+  UNIFORM_RANDOM=1,
+  WORST_CASE,
+  TRANSPOSE,
+  NEAREST_NEIGHBOR
 };
 
 struct terminal_message
@@ -134,14 +148,15 @@ struct terminal_message
 
   // For buffer message
    int vc_index;
-   unsigned int credit_delay;
-
    int input_chan;
+   int output_chan;
    
    tw_stime saved_available_time;
    tw_stime saved_credit_time;
 
    int intm_group_id;
+   int wait_type;
+   short route;
 };
 
 struct router_state
@@ -156,6 +171,8 @@ struct router_state
    // NUM_ROUTER+GLOBAL_CHANNELS -- RADIX-1 terminal indices (router-terminal channels)
    tw_stime next_output_available_time[RADIX];
    tw_stime next_input_available_time[RADIX];
+
+   tw_stime next_available_time;
    tw_stime next_credit_available_time[RADIX];
 
    unsigned int credit_occupancy[RADIX];   
@@ -163,15 +180,34 @@ struct router_state
 
    unsigned int input_vc_state[RADIX];
    unsigned int output_vc_state[RADIX];
+
+   //first element of linked list
+  struct waiting_list * root;
+
+  // pointer to the linked list
+  struct waiting_list * ptr;
+};
+
+
+struct waiting_list
+{
+   terminal_message * packet;
+   struct waiting_list * next;
+   struct waiting_list * prev;
+   int chan;
 };
 
 static int       nlp_terminal_per_pe;
 static int       nlp_router_per_pe;
 static int opt_mem = 10000;
+static int mem_factor = 8;
 
+static int ROUTING= MINIMAL;
+static int traffic= TRANSPOSE;
 int minimal_count, nonmin_count;
 
 int adaptive_threshold;
+int head_delay;
 
 tw_stime         average_travel_time = 0;
 tw_stime         total_time = 0;
